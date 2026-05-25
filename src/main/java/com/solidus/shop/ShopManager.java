@@ -208,126 +208,140 @@ public class ShopManager {
     /**
      * Processes a buy transaction for a shop item.
      *
-     * Transaction Flow:
+     * Transaction Flow (fully async — no server thread blocking):
      * 1. Validate the item exists and has a valid buy price
-     * 2. Check if the player has sufficient balance
-     * 3. Atomically deduct the price from the player's balance
+     * 2. Check if the player has sufficient balance (async chain)
+     * 3. Atomically deduct the price from the player's balance (async chain)
      * 4. Spawn the purchased item stack into the player's inventory
+     *
+     * No .join() is used — all CompletableFuture operations are chained
+     * with .thenAccept() and server-thread callbacks via player.server.execute(),
+     * preventing any server tick thread blocking.
      *
      * @param player     The buying player
      * @param material   The Minecraft material name
      * @param quantity   The number of items to buy
-     * @return true if the transaction succeeded
      */
-    public boolean processBuy(ServerPlayer player, String material, int quantity) {
+    public void processBuy(ServerPlayer player, String material, int quantity) {
         // Find the item in any section
         ShopItem item = findItem(material);
         if (item == null || item.buyPrice() <= 0) {
             player.sendSystemMessage(TextUtil.error("This item cannot be purchased."));
-            return false;
+            return;
         }
 
         double totalCost = CurrencyUtil.round(item.buyPrice() * quantity);
-
-        // Check balance (reads from in-memory cache — instant)
         BalanceManager balanceManager = economyEngine.getBalanceManager();
-        double balance = balanceManager.getBalance(player).join();
 
-        if (balance < totalCost) {
-            player.sendSystemMessage(
-                TextUtil.error("Insufficient funds! You need " + CurrencyUtil.format(totalCost)
-                    + " but only have " + CurrencyUtil.format(balance)));
-            return false;
-        }
+        // Full async chain — no .join(), no server thread blocking
+        balanceManager.getBalance(player).thenAccept(balance -> {
+            player.server.execute(() -> {
+                if (balance < totalCost) {
+                    player.sendSystemMessage(
+                        TextUtil.error("Insufficient funds! You need " + CurrencyUtil.format(totalCost)
+                            + " but only have " + CurrencyUtil.format(balance)));
+                    return;
+                }
 
-        // Deduct balance
-        double newBalance = balanceManager.subtractBalance(player, totalCost).join();
-        if (newBalance < 0) {
-            player.sendSystemMessage(TextUtil.error("Transaction failed. Please try again."));
-            return false;
-        }
+                // Deduct balance asynchronously
+                balanceManager.subtractBalance(player, totalCost).thenAccept(newBalance -> {
+                    player.server.execute(() -> {
+                        if (newBalance < 0) {
+                            player.sendSystemMessage(TextUtil.error("Transaction failed. Please try again."));
+                            return;
+                        }
 
-        // Spawn item into player's inventory
-        net.minecraft.world.item.ItemStack itemStack = createItemStack(material, quantity);
-        if (!player.getInventory().add(itemStack)) {
-            // Inventory full - drop at player's feet
-            player.drop(itemStack, false);
-            player.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
-        }
+                        // Spawn item into player's inventory
+                        net.minecraft.world.item.ItemStack itemStack = createItemStack(material, quantity);
+                        if (!player.getInventory().add(itemStack)) {
+                            // Inventory full - drop at player's feet
+                            player.drop(itemStack, false);
+                            player.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
+                        }
 
-        // Success notification
-        player.sendSystemMessage(
-            TextUtil.success("Purchased " + quantity + "x " + material + " for ")
-                .append(TextUtil.currency(CurrencyUtil.format(totalCost)))
-                .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-                .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
-        );
-
-        return true;
+                        // Success notification
+                        player.sendSystemMessage(
+                            TextUtil.success("Purchased " + quantity + "x " + material + " for ")
+                                .append(TextUtil.currency(CurrencyUtil.format(totalCost)))
+                                .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                                .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
+                        );
+                    });
+                });
+            });
+        });
     }
 
     /**
      * Processes a sell transaction for a shop item.
      *
-     * Transaction Flow:
+     * Transaction Flow (fully async — no server thread blocking):
      * 1. Validate the item exists and has a valid sell price
      * 2. Apply anti-farm deflation to the sell price
      * 3. Verify the player has the item in their inventory
      * 4. Remove the item from the player's inventory
-     * 5. Atomically add the sell price to the player's balance
+     * 5. Atomically add the sell price to the player's balance (async chain)
+     *
+     * No .join() is used — the balance add operation is chained with
+     * .thenAccept() and server-thread callbacks via player.server.execute(),
+     * preventing any server tick thread blocking.
+     *
+     * IMPORTANT: Items are removed from inventory BEFORE the async balance
+     * add completes. If the balance add fails, items are already gone and
+     * cannot be restored. This is logged as CRITICAL for admin investigation.
      *
      * @param player     The selling player
      * @param material   The Minecraft material name
      * @param quantity   The number of items to sell
-     * @return true if the transaction succeeded
      */
-    public boolean processSell(ServerPlayer player, String material, int quantity) {
+    public void processSell(ServerPlayer player, String material, int quantity) {
         ShopItem item = findItem(material);
         if (item == null || item.sellPrice() <= 0) {
             player.sendSystemMessage(TextUtil.error("This item cannot be sold."));
-            return false;
+            return;
         }
 
         // Check if player has the item
         if (!hasItemInInventory(player, material, quantity)) {
             player.sendSystemMessage(TextUtil.error("You don't have " + quantity + "x " + material + " in your inventory."));
-            return false;
+            return;
         }
 
-        // Remove items from inventory
+        // Remove items from inventory (must happen synchronously on server thread
+        // to prevent double-sell race — the player is interacting with the GUI)
         removeItemFromInventory(player, material, quantity);
 
         // Calculate sell price (already deflated by AntiFarmManager during loading)
         double totalValue = CurrencyUtil.round(item.sellPrice() * quantity);
 
-        // Add balance
+        // Add balance asynchronously — no .join(), no server thread blocking
         BalanceManager balanceManager = economyEngine.getBalanceManager();
-        double newBalance = balanceManager.addBalance(player, totalValue).join();
+        balanceManager.addBalance(player, totalValue).thenAccept(newBalance -> {
+            player.server.execute(() -> {
+                if (newBalance < 0) {
+                    // CRITICAL: Balance add failed after item removal - item is lost
+                    SolidusMod.LOGGER.error("CRITICAL: Sell balance add failed for {}! Item lost: {}x{}",
+                        player.getName().getString(), quantity, material);
+                    player.sendSystemMessage(TextUtil.error("Transaction error. Please contact an admin."));
+                    return;
+                }
 
-        if (newBalance < 0) {
-            // CRITICAL: Balance add failed after item removal - attempt refund
-            SolidusMod.LOGGER.error("CRITICAL: Sell balance add failed for {}! Item lost: {}x{}",
-                player.getName().getString(), quantity, material);
-            player.sendSystemMessage(TextUtil.error("Transaction error. Please contact an admin."));
-            return false;
-        }
+                // Success notification with deflation warning if applicable
+                Component message = TextUtil.success("Sold " + quantity + "x " + material + " for ")
+                    .append(TextUtil.currency(CurrencyUtil.format(totalValue)));
 
-        // Success notification with deflation warning if applicable
-        Component message = TextUtil.success("Sold " + quantity + "x " + material + " for ")
-            .append(TextUtil.currency(CurrencyUtil.format(totalValue)));
+                if (AntiFarmManager.isDeflated(material)) {
+                    String reason = AntiFarmManager.getDeflationReason(material);
+                    message = message.append(TextUtil.styled(
+                        " [" + reason + " - Deflated]", ChatFormatting.DARK_RED));
+                }
 
-        if (AntiFarmManager.isDeflated(material)) {
-            String reason = AntiFarmManager.getDeflationReason(material);
-            message = message.append(TextUtil.styled(
-                " [" + reason + " - Deflated]", ChatFormatting.DARK_RED));
-        }
-
-        player.sendSystemMessage(message.append(
-            TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-            .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
-        );
-
-        return true;
+                player.sendSystemMessage(message.append(
+                    TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                    .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
+                );
+            });
+        });
     }
 
     // ── Helpers ───────────────────────────────────────────
