@@ -85,6 +85,15 @@ public class EconomyEngine {
     }
 
     /**
+     * Gets the transaction log for recording and querying financial history.
+     * @throws IllegalStateException if called before initialization
+     */
+    public TransactionLog getTransactionLog() {
+        ensureInitialized();
+        return storage.getTransactionLog();
+    }
+
+    /**
      * Checks if the engine is initialized and ready for operations.
      */
     public boolean isInitialized() {

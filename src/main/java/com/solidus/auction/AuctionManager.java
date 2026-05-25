@@ -3,6 +3,7 @@ package com.solidus.auction;
 import com.solidus.SolidusMod;
 import com.solidus.economy.BalanceManager;
 import com.solidus.economy.EconomyEngine;
+import com.solidus.economy.TransactionLog;
 import com.solidus.util.CurrencyUtil;
 import com.solidus.util.TextUtil;
 
@@ -236,6 +237,15 @@ public class AuctionManager {
                                     // Item saved successfully — now safe to remove from player
                                     player.getInventory().setItem(player.getInventory().selected, ItemStack.EMPTY);
 
+                                    // Log transaction
+                                    economyEngine.getTransactionLog().log(
+                                        TransactionLog.Type.AUCTION_LIST,
+                                        player.getUUID(), player.getName().getString(),
+                                        null, null,
+                                        listingFee, materialName, quantity,
+                                        "Listed " + quantity + "x " + materialName + " for " + CurrencyUtil.format(price)
+                                    );
+
                                     player.sendSystemMessage(
                                         TextUtil.success("Item listed on the Auction House for ")
                                             .append(TextUtil.currency(CurrencyUtil.format(price)))
@@ -382,6 +392,33 @@ public class AuctionManager {
                                     buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
                                 }
 
+                                // Log transaction for buyer
+                                economyEngine.getTransactionLog().log(
+                                    TransactionLog.Type.AUCTION_BOUGHT,
+                                    buyer.getUUID(), buyer.getName().getString(),
+                                    entry.sellerUuid(), entry.sellerName(),
+                                    entry.price(), entry.materialName(), entry.quantity(),
+                                    "Bought " + entry.quantity() + "x " + entry.materialName() + " from " + entry.sellerName()
+                                );
+
+                                // Log transaction for seller (may be offline)
+                                economyEngine.getTransactionLog().log(
+                                    TransactionLog.Type.AUCTION_SOLD,
+                                    entry.sellerUuid(), entry.sellerName(),
+                                    buyer.getUUID(), buyer.getName().getString(),
+                                    entry.price(), entry.materialName(), entry.quantity(),
+                                    "Sold " + entry.quantity() + "x " + entry.materialName() + " to " + buyer.getName().getString()
+                                );
+
+                                // Queue notification for seller (delivers immediately if online)
+                                economyEngine.getTransactionLog().queueNotification(
+                                    entry.sellerUuid(),
+                                    "Your auction item " + entry.quantity() + "x " + entry.materialName() +
+                                        " was purchased by " + buyer.getName().getString() + " for " +
+                                        CurrencyUtil.format(entry.price()),
+                                    buyer.server
+                                );
+
                                 // Success notification
                                 buyer.sendSystemMessage(
                                     TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
@@ -416,9 +453,25 @@ public class AuctionManager {
      * @return CompletableFuture with a list of active AuctionEntry objects
      */
     public CompletableFuture<List<AuctionEntry>> getActiveListings() {
+        return getActiveListings(SortOrder.NEWEST);
+    }
+
+    /**
+     * Gets all active listings with a specified sort order.
+     *
+     * @param sortOrder The sort order to apply (NEWEST, PRICE_LOW, PRICE_HIGH, MATERIAL)
+     * @return CompletableFuture with a list of active AuctionEntry objects
+     */
+    public CompletableFuture<List<AuctionEntry>> getActiveListings(SortOrder sortOrder) {
         return CompletableFuture.supplyAsync(() -> {
             List<AuctionEntry> entries = new ArrayList<>();
-            String sql = "SELECT * FROM auction_listings WHERE status = 0 AND expire_timestamp > ? ORDER BY listed_timestamp DESC";
+            String orderBy = switch (sortOrder) {
+                case NEWEST -> "listed_timestamp DESC";
+                case PRICE_LOW -> "price ASC";
+                case PRICE_HIGH -> "price DESC";
+                case MATERIAL -> "material_name ASC, price ASC";
+            };
+            String sql = "SELECT * FROM auction_listings WHERE status = 0 AND expire_timestamp > ? ORDER BY " + orderBy;
             try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setLong(1, System.currentTimeMillis());
                 try (ResultSet rs = ps.executeQuery()) {
@@ -431,6 +484,24 @@ public class AuctionManager {
             }
             return entries;
         }, asyncExecutor);
+    }
+
+    /** Sort order options for auction listings */
+    public enum SortOrder {
+        NEWEST("Newest First"),
+        PRICE_LOW("Price: Low to High"),
+        PRICE_HIGH("Price: High to Low"),
+        MATERIAL("Material A-Z");
+
+        private final String displayName;
+
+        SortOrder(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public String displayName() {
+            return displayName;
+        }
     }
 
     /**
@@ -631,6 +702,192 @@ public class AuctionManager {
             return ItemStack.EMPTY;
         }
     }
+
+    // ── Collect & Cancel Operations ──────────────────────
+
+    /**
+     * Collects all expired and uncollected items for a seller.
+     *
+     * When a listing expires (status=EXPIRED) and the seller was offline,
+     * the item remains in the database marked as EXPIRED. This method
+     * retrieves those items and returns them to the seller's inventory.
+     *
+     * After collecting, the listings are deleted from the database
+     * to prevent re-collection.
+     *
+     * Flow (fully async — no server thread blocking):
+     * 1. Query all EXPIRED listings for this seller
+     * 2. On server thread: give items to the player
+     * 3. Delete collected listings from the database
+     *
+     * @param player The seller collecting their expired items
+     */
+    public void collectExpiredItems(ServerPlayer player) {
+        CompletableFuture.supplyAsync(() -> {
+            String sql = "SELECT * FROM auction_listings WHERE seller_uuid = ? AND status = 2";
+            List<AuctionEntry> expired = new ArrayList<>();
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
+                ps.setString(1, player.getUUID().toString());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        expired.add(mapResultSetToEntry(rs));
+                    }
+                }
+            } catch (SQLException e) {
+                SolidusMod.LOGGER.error("Failed to query expired listings for collection", e);
+            }
+            return expired;
+        }, asyncExecutor).thenAccept(expired -> {
+            player.server.execute(() -> {
+                if (expired.isEmpty()) {
+                    player.sendSystemMessage(TextUtil.styled(
+                        "You have no expired items to collect.", ChatFormatting.GRAY));
+                    return;
+                }
+
+                int collected = 0;
+                for (AuctionEntry entry : expired) {
+                    ItemStack item = deserializeItemStack(
+                        entry.itemNbt(), entry.materialName(), entry.quantity());
+                    if (!player.getInventory().add(item)) {
+                        player.drop(item, false);
+                    }
+                    collected++;
+                }
+
+                // Delete collected listings from the database
+                deleteCollectedListings(player.getUUID());
+
+                player.sendSystemMessage(
+                    TextUtil.success("Collected " + collected + " expired item(s)!"));
+            });
+        });
+    }
+
+    /**
+     * Cancels an active listing and returns the item to the seller.
+     *
+     * Only the seller can cancel their own listing, and only if it is
+     * still ACTIVE (not yet purchased or expired).
+     *
+     * Flow (fully async — no server thread blocking):
+     * 1. On auction executor: verify listing exists and belongs to the seller
+     * 2. Mark the listing as EXPIRED (status=2) atomically
+     * 3. On server thread: return the item to the seller's inventory
+     *
+     * @param player  The seller canceling their listing
+     * @param listingId The UUID of the listing to cancel
+     */
+    public void cancelListing(ServerPlayer player, UUID listingId) {
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                // Check if the listing is active and belongs to this seller
+                String selectSql = "SELECT * FROM auction_listings WHERE listing_id = ? AND status = 0";
+                AuctionEntry entry = null;
+                try (PreparedStatement ps = persistentConnection.prepareStatement(selectSql)) {
+                    ps.setString(1, listingId.toString());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            entry = mapResultSetToEntry(rs);
+                        }
+                    }
+                }
+
+                if (entry == null) {
+                    return "NOT_FOUND";
+                }
+
+                // Verify ownership
+                if (!entry.sellerUuid().equals(player.getUUID())) {
+                    return "NOT_OWNER";
+                }
+
+                // Mark as EXPIRED (status=2) to remove from active listings
+                String updateSql = "UPDATE auction_listings SET status = 2 WHERE listing_id = ?";
+                try (PreparedStatement ps = persistentConnection.prepareStatement(updateSql)) {
+                    ps.setString(1, listingId.toString());
+                    ps.executeUpdate();
+                }
+
+                return entry;
+
+            } catch (SQLException e) {
+                SolidusMod.LOGGER.error("Auction cancel DB error for listing: {}", listingId, e);
+                return "DB_ERROR";
+            }
+        }, asyncExecutor).thenAccept(result -> {
+            player.server.execute(() -> {
+                if (result instanceof String errorMsg) {
+                    switch (errorMsg) {
+                        case "NOT_FOUND" -> player.sendSystemMessage(
+                            TextUtil.error("Listing not found or already sold!"));
+                        case "NOT_OWNER" -> player.sendSystemMessage(
+                            TextUtil.error("You can only cancel your own listings!"));
+                        case "DB_ERROR" -> player.sendSystemMessage(
+                            TextUtil.error("Transaction error. Please try again."));
+                    }
+                    return;
+                }
+
+                AuctionEntry entry = (AuctionEntry) result;
+
+                // Return item to the seller
+                ItemStack item = deserializeItemStack(
+                    entry.itemNbt(), entry.materialName(), entry.quantity());
+                if (!player.getInventory().add(item)) {
+                    player.drop(item, false);
+                    player.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
+                }
+
+                player.sendSystemMessage(
+                    TextUtil.success("Cancelled listing for " + entry.quantity() + "x " + entry.materialName()));
+            });
+        });
+    }
+
+    /**
+     * Gets all expired (uncollected) listings for a specific seller.
+     * Used to show the count of collectible items in /ah collect.
+     *
+     * @param sellerUuid The seller's UUID
+     * @return CompletableFuture with a list of EXPIRED AuctionEntry objects
+     */
+    public CompletableFuture<List<AuctionEntry>> getExpiredListingsBySeller(UUID sellerUuid) {
+        return CompletableFuture.supplyAsync(() -> {
+            List<AuctionEntry> entries = new ArrayList<>();
+            String sql = "SELECT * FROM auction_listings WHERE seller_uuid = ? AND status = 2 ORDER BY expire_timestamp DESC";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
+                ps.setString(1, sellerUuid.toString());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        entries.add(mapResultSetToEntry(rs));
+                    }
+                }
+            } catch (SQLException e) {
+                SolidusMod.LOGGER.error("Failed to get expired listings for seller", e);
+            }
+            return entries;
+        }, asyncExecutor);
+    }
+
+    /**
+     * Deletes all collected (EXPIRED) listings for a seller from the database.
+     * Called after items have been successfully returned to the player.
+     */
+    private void deleteCollectedListings(UUID sellerUuid) {
+        CompletableFuture.runAsync(() -> {
+            String sql = "DELETE FROM auction_listings WHERE seller_uuid = ? AND status = 2";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
+                ps.setString(1, sellerUuid.toString());
+                int deleted = ps.executeUpdate();
+                SolidusMod.LOGGER.info("Deleted {} collected listings for seller: {}", deleted, sellerUuid);
+            } catch (SQLException e) {
+                SolidusMod.LOGGER.error("Failed to delete collected listings for seller: {}", sellerUuid, e);
+            }
+        }, asyncExecutor);
+    }
+
+    // ── Getters ───────────────────────────────────────────
 
     public EconomyEngine getEconomyEngine() {
         return economyEngine;

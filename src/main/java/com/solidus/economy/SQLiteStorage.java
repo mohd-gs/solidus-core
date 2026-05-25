@@ -74,6 +74,9 @@ public class SQLiteStorage {
     /** Persistent database connection — shared across all executor operations */
     private volatile Connection persistentConnection;
 
+    /** Transaction log — shares this executor and connection */
+    private TransactionLog transactionLog;
+
     /**
      * Constructs a new SQLiteStorage with the given config directory path.
      *
@@ -115,6 +118,10 @@ public class SQLiteStorage {
 
             // Pre-load all balances into the in-memory cache
             loadAllBalancesIntoCache(persistentConnection);
+
+            // Initialize transaction log (shares connection and executor)
+            transactionLog = new TransactionLog(persistentConnection, asyncExecutor);
+            transactionLog.initialize();
 
             initialized = true;
             SolidusMod.LOGGER.info("SQLite database initialized successfully. Cached {} player balances.",
@@ -218,8 +225,14 @@ public class SQLiteStorage {
 
     /**
      * Retrieves the top N players by balance for leaderboard display.
-     * Reads from the in-memory cache and sorts on the calling thread.
-     * Player names are resolved from the in-memory playerNameCache.
+     *
+     * Uses the SQLite idx_balance_rank index for efficient sorting
+     * instead of sorting the entire in-memory cache. This scales
+     * much better with thousands of players since SQLite only needs
+     * to scan the index and return the top N rows.
+     *
+     * Player names are resolved from the in-memory playerNameCache
+     * for instant lookup without additional DB queries.
      *
      * @param limit Maximum number of entries to return
      * @return CompletableFuture containing list of BalanceEntry objects
@@ -227,19 +240,37 @@ public class SQLiteStorage {
     public CompletableFuture<List<BalanceEntry>> getTopBalances(int limit) {
         return CompletableFuture.supplyAsync(() -> {
             ensureInitialized();
-            return balanceCache.entrySet().stream()
-                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
-                .limit(limit)
-                .collect(ArrayList<BalanceEntry>::new,
-                    (list, entry) -> {
-                        String name = playerNameCache.getOrDefault(entry.getKey(), "Unknown");
-                        list.add(new BalanceEntry(
-                            list.size() + 1,
-                            name,
-                            entry.getValue()
-                        ));
-                    },
-                    ArrayList::addAll);
+            List<BalanceEntry> entries = new ArrayList<>();
+            String sql = "SELECT uuid, player_name, balance FROM player_balances ORDER BY balance DESC LIMIT ?";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
+                ps.setInt(1, limit);
+                try (ResultSet rs = ps.executeQuery()) {
+                    int rank = 0;
+                    while (rs.next()) {
+                        rank++;
+                        String name = rs.getString("player_name");
+                        // Fallback to playerNameCache if DB name is empty
+                        if (name == null || name.isEmpty()) {
+                            UUID uuid = UUID.fromString(rs.getString("uuid"));
+                            name = playerNameCache.getOrDefault(uuid, "Unknown");
+                        }
+                        entries.add(new BalanceEntry(rank, name, rs.getDouble("balance")));
+                    }
+                }
+            } catch (SQLException e) {
+                SolidusMod.LOGGER.error("Failed to get top balances from database", e);
+                // Fallback to in-memory sort if DB query fails
+                return balanceCache.entrySet().stream()
+                    .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                    .limit(limit)
+                    .collect(ArrayList<BalanceEntry>::new,
+                        (list, entry) -> {
+                            String name = playerNameCache.getOrDefault(entry.getKey(), "Unknown");
+                            list.add(new BalanceEntry(list.size() + 1, name, entry.getValue()));
+                        },
+                        ArrayList::addAll);
+            }
+            return entries;
         }, asyncExecutor);
     }
 
@@ -429,6 +460,22 @@ public class SQLiteStorage {
                 SolidusMod.LOGGER.error("Failed to persist new player: {}", uuid, e);
             }
         }, asyncExecutor);
+    }
+
+    /**
+     * Returns the transaction log instance.
+     * Available after initialize() has been called.
+     */
+    public TransactionLog getTransactionLog() {
+        return transactionLog;
+    }
+
+    /**
+     * Returns the player name cache for offline player lookups.
+     * Maps UUID → last known player name.
+     */
+    public ConcurrentHashMap<UUID, String> getPlayerNameCache() {
+        return playerNameCache;
     }
 
     /**

@@ -9,6 +9,7 @@ import com.solidus.SolidusMod;
 import com.solidus.economy.AntiFarmManager;
 import com.solidus.economy.BalanceManager;
 import com.solidus.economy.EconomyEngine;
+import com.solidus.economy.TransactionLog;
 import com.solidus.util.ConfigManager;
 import com.solidus.util.CurrencyUtil;
 import com.solidus.util.TextUtil;
@@ -259,6 +260,15 @@ public class ShopManager {
                             player.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
                         }
 
+                        // Log transaction
+                        economyEngine.getTransactionLog().log(
+                            TransactionLog.Type.SHOP_BUY,
+                            player.getUUID(), player.getName().getString(),
+                            null, null,
+                            totalCost, material, quantity,
+                            "Bought " + quantity + "x " + material + " from shop"
+                        );
+
                         // Success notification
                         player.sendSystemMessage(
                             TextUtil.success("Purchased " + quantity + "x " + material + " for ")
@@ -335,6 +345,15 @@ public class ShopManager {
                     message = message.append(TextUtil.styled(
                         " [" + reason + " - Deflated]", ChatFormatting.DARK_RED));
                 }
+
+                // Log transaction
+                economyEngine.getTransactionLog().log(
+                    TransactionLog.Type.SHOP_SELL,
+                    player.getUUID(), player.getName().getString(),
+                    null, null,
+                    totalValue, material, quantity,
+                    "Sold " + quantity + "x " + material + " to shop"
+                );
 
                 player.sendSystemMessage(message.append(
                     TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))

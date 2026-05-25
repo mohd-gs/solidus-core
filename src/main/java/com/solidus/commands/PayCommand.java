@@ -1,22 +1,31 @@
 package com.solidus.commands;
 
+import com.solidus.SolidusMod;
 import com.solidus.economy.BalanceManager;
+import com.solidus.economy.EconomyEngine;
+import com.solidus.economy.SQLiteStorage;
+import com.solidus.economy.TransactionLog;
 import com.solidus.util.TextUtil;
 import com.solidus.util.CurrencyUtil;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
-import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
+import java.util.UUID;
+
 /**
- * /pay command - Safe peer-to-peer balance transfer with validation checks.
+ * /pay command - Safe peer-to-peer balance transfer with offline player support.
  *
- * Usage: /pay <player> <amount>
+ * Usage:
+ *   /pay <player> <amount>       - Pay an online player
+ *   /pay offline <name> <amount> - Pay an offline player by name
+ *
  * Permission: Available to all players
  *
  * Anti-Exploit Protections:
@@ -27,27 +36,63 @@ import net.minecraft.server.level.ServerPlayer;
  * - Recipient existence validation
  * - Atomic deduct-then-add operation with rollback on failure
  *
+ * Offline Payment Flow:
+ * When paying an offline player, the system looks up the player's UUID
+ * from the economy database cache. If the player has never been on the
+ * server, the payment is rejected. A notification is queued for delivery
+ * when the offline player next logs in.
+ *
  * All text uses Component.literal().withStyle() - NO legacy formatting codes.
  */
 public class PayCommand {
 
-    public static void register(CommandDispatcher<CommandSourceStack> dispatcher, BalanceManager balanceManager) {
+    public static void register(CommandDispatcher<CommandSourceStack> dispatcher, EconomyEngine economyEngine) {
+        BalanceManager balanceManager = economyEngine.getBalanceManager();
+
         dispatcher.register(Commands.literal("pay")
+            // /pay <online_player> <amount> - Pay an online player
             .then(Commands.argument("player", EntityArgument.player())
                 .then(Commands.argument("amount", DoubleArgumentType.doubleArg(CurrencyUtil.MIN_TRANSACTION))
                     .executes(context -> {
                         ServerPlayer sender = context.getSource().getPlayerOrException();
                         ServerPlayer receiver = EntityArgument.getPlayer(context, "player");
                         double amount = DoubleArgumentType.getDouble(context, "amount");
-                        executePay(sender, receiver, amount, balanceManager);
+                        executePayOnline(sender, receiver, amount, economyEngine);
                         return 1;
                     })
+                )
+            )
+            // /pay offline <name> <amount> - Pay an offline player by name
+            .then(Commands.literal("offline")
+                .then(Commands.argument("name", StringArgumentType.word())
+                    .suggests((context, builder) -> {
+                        // Suggest known player names from the database cache
+                        SQLiteStorage storage = economyEngine.getStorage();
+                        return SharedSuggestionProvider.suggest(
+                            storage.getPlayerNameCache().values().stream(), builder);
+                    })
+                    .then(Commands.argument("amount", DoubleArgumentType.doubleArg(CurrencyUtil.MIN_TRANSACTION))
+                        .executes(context -> {
+                            ServerPlayer sender = context.getSource().getPlayerOrException();
+                            String targetName = StringArgumentType.getString(context, "name");
+                            double amount = DoubleArgumentType.getDouble(context, "amount");
+                            executePayOffline(sender, targetName, amount, economyEngine);
+                            return 1;
+                        })
+                    )
                 )
             )
         );
     }
 
-    private static void executePay(ServerPlayer sender, ServerPlayer receiver, double amount, BalanceManager balanceManager) {
+    /**
+     * Executes a payment to an online player.
+     */
+    private static void executePayOnline(ServerPlayer sender, ServerPlayer receiver,
+                                          double amount, EconomyEngine economyEngine) {
+        BalanceManager balanceManager = economyEngine.getBalanceManager();
+        TransactionLog transactionLog = economyEngine.getTransactionLog();
+
         // Pre-validation: reject negative or zero amounts
         if (amount <= 0) {
             sender.sendSystemMessage(TextUtil.error("Amount must be positive!"));
@@ -89,12 +134,126 @@ public class PayCommand {
                             .append(TextUtil.styled("New balance: ", net.minecraft.ChatFormatting.GRAY))
                             .append(TextUtil.currency(CurrencyUtil.format(result.receiverNewBalance())))
                     );
+
+                    // Log transaction for both players
+                    transactionLog.log(TransactionLog.Type.PAY_SEND,
+                        sender.getUUID(), sender.getName().getString(),
+                        receiver.getUUID(), receiver.getName().getString(),
+                        amount, null, 0,
+                        "Paid " + receiver.getName().getString());
+
+                    transactionLog.log(TransactionLog.Type.PAY_RECEIVE,
+                        receiver.getUUID(), receiver.getName().getString(),
+                        sender.getUUID(), sender.getName().getString(),
+                        amount, null, 0,
+                        "Received from " + sender.getName().getString());
                 } else {
                     // Transfer failed
-                    sender.sendSystemMessage(
-                        TextUtil.error(result.message())
-                    );
+                    sender.sendSystemMessage(TextUtil.error(result.message()));
                 }
+            });
+        });
+    }
+
+    /**
+     * Executes a payment to an offline player by name.
+     *
+     * The system looks up the player's UUID from the economy database cache.
+     * If the player has never joined the server (no cache entry), the payment
+     * is rejected. A notification is queued for delivery on next login.
+     */
+    private static void executePayOffline(ServerPlayer sender, String targetName,
+                                           double amount, EconomyEngine economyEngine) {
+        BalanceManager balanceManager = economyEngine.getBalanceManager();
+        TransactionLog transactionLog = economyEngine.getTransactionLog();
+        SQLiteStorage storage = economyEngine.getStorage();
+
+        // Pre-validation: reject negative or zero amounts
+        if (amount <= 0) {
+            sender.sendSystemMessage(TextUtil.error("Amount must be positive!"));
+            return;
+        }
+
+        // Pre-validation: reject amounts exceeding the maximum transaction cap
+        if (amount > CurrencyUtil.MAX_TRANSACTION) {
+            sender.sendSystemMessage(TextUtil.error(
+                "Amount exceeds maximum transfer limit of " + CurrencyUtil.format(CurrencyUtil.MAX_TRANSACTION)));
+            return;
+        }
+
+        // Look up target UUID from the name cache
+        UUID targetUuid = null;
+        for (var entry : storage.getPlayerNameCache().entrySet()) {
+            if (entry.getValue().equalsIgnoreCase(targetName)) {
+                targetUuid = entry.getKey();
+                break;
+            }
+        }
+
+        if (targetUuid == null) {
+            sender.sendSystemMessage(TextUtil.error(
+                "Player '" + targetName + "' not found. They must have joined the server at least once."));
+            return;
+        }
+
+        // Prevent self-transfer
+        if (sender.getUUID().equals(targetUuid)) {
+            sender.sendSystemMessage(TextUtil.error("You cannot pay yourself!"));
+            return;
+        }
+
+        final UUID receiverUuid = targetUuid;
+
+        // Offline transfer: deduct from sender (online), add to receiver (offline)
+        balanceManager.subtractBalance(sender, amount).thenAccept(newSenderBalance -> {
+            sender.server.execute(() -> {
+                if (newSenderBalance < 0) {
+                    sender.sendSystemMessage(TextUtil.error("Insufficient funds!"));
+                    return;
+                }
+
+                // Add to offline receiver's balance
+                balanceManager.addBalance(receiverUuid, targetName, amount).thenAccept(newReceiverBalance -> {
+                    sender.server.execute(() -> {
+                        if (newReceiverBalance < 0) {
+                            // CRITICAL: Addition failed after deduction — refund sender
+                            SolidusMod.LOGGER.error(
+                                "CRITICAL: Offline pay add failed after deduct! Refunding sender. Sender: {}, Target: {}, Amount: {}",
+                                sender.getName().getString(), targetName, amount);
+                            balanceManager.addBalance(sender, amount);
+                            sender.sendSystemMessage(TextUtil.error("Transfer failed. Please try again."));
+                            return;
+                        }
+
+                        // Notify sender
+                        sender.sendSystemMessage(
+                            TextUtil.success("You paid " + targetName + " (offline) ")
+                                .append(TextUtil.currency(CurrencyUtil.format(amount)))
+                                .append(TextUtil.plain(". "))
+                                .append(TextUtil.styled("New balance: ", net.minecraft.ChatFormatting.GRAY))
+                                .append(TextUtil.currency(CurrencyUtil.format(newSenderBalance)))
+                        );
+
+                        // Queue notification for offline player
+                        transactionLog.queueNotification(receiverUuid,
+                            "You received " + CurrencyUtil.format(amount) + " from " +
+                                sender.getName().getString() + " while you were offline.",
+                            sender.server);
+
+                        // Log transactions
+                        transactionLog.log(TransactionLog.Type.PAY_SEND,
+                            sender.getUUID(), sender.getName().getString(),
+                            receiverUuid, targetName,
+                            amount, null, 0,
+                            "Paid " + targetName + " (offline)");
+
+                        transactionLog.log(TransactionLog.Type.PAY_RECEIVE,
+                            receiverUuid, targetName,
+                            sender.getUUID(), sender.getName().getString(),
+                            amount, null, 0,
+                            "Received from " + sender.getName().getString() + " (offline)");
+                    });
+                });
             });
         });
     }

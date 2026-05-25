@@ -56,6 +56,23 @@ public final class AuctionGUI {
     }
 
     /**
+     * Opens the auction house with a specific sort order.
+     *
+     * @param player        The player viewing the auction
+     * @param auctionManager The auction manager
+     * @param sortOrder     The sort order to apply
+     */
+    public static void openAuctionSorted(ServerPlayer player, AuctionManager auctionManager,
+                                          AuctionManager.SortOrder sortOrder) {
+        auctionManager.getActiveListings(sortOrder).thenAccept(listings -> {
+            player.server.execute(() -> {
+                // Show sort indicator in header
+                buildAndOpenAuctionScreen(player, auctionManager, listings, 0, false, sortOrder);
+            });
+        });
+    }
+
+    /**
      * Opens the auction house showing only the player's own listings.
      */
     public static void openMyListings(ServerPlayer player, AuctionManager auctionManager) {
@@ -71,11 +88,21 @@ public final class AuctionGUI {
      */
     public static void buildAndOpenAuctionScreen(ServerPlayer player, AuctionManager auctionManager,
                                                     List<AuctionEntry> listings, int page, boolean myItems) {
+        buildAndOpenAuctionScreen(player, auctionManager, listings, page, myItems, null);
+    }
+
+    /**
+     * Builds and opens the auction screen with the given listings and sort order.
+     */
+    public static void buildAndOpenAuctionScreen(ServerPlayer player, AuctionManager auctionManager,
+                                                    List<AuctionEntry> listings, int page, boolean myItems,
+                                                    AuctionManager.SortOrder sortOrder) {
         List<GuiSlot> slots = new ArrayList<>();
 
-        // Header: Title
+        // Header: Title (show sort order if specified)
+        String titleSuffix = sortOrder != null ? " [" + sortOrder.displayName() + "]" : "";
         ItemStack titleItem = createDisplayItem(Items.GOLD_BLOCK,
-            TextUtil.styledBold("Auction House", ChatFormatting.GOLD),
+            TextUtil.styledBold("Auction House" + titleSuffix, ChatFormatting.GOLD),
             TextUtil.loreLine(listings.size() + " active listings"));
         slots.add(new GuiSlot(4, titleItem, GuiSlot.Type.DISPLAY_ONLY, null));
 

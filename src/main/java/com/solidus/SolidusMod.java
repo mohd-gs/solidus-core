@@ -5,8 +5,10 @@ import com.solidus.commands.BaltopCommand;
 import com.solidus.commands.PayCommand;
 import com.solidus.commands.ShopCommand;
 import com.solidus.commands.AuctionCommand;
+import com.solidus.commands.TransactionsCommand;
 import com.solidus.economy.BalanceManager;
 import com.solidus.economy.EconomyEngine;
+import com.solidus.economy.TransactionLog;
 import com.solidus.shop.ShopManager;
 import com.solidus.auction.AuctionManager;
 import com.solidus.networking.PacketHandler;
@@ -15,6 +17,7 @@ import com.solidus.networking.RateLimiter;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
 import net.minecraft.server.MinecraftServer;
 
@@ -23,7 +26,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Solidus - Advanced Server-Side Economy & Commerce Engine
- * Copyright (c) 2025 MOHD_Gs. All rights reserved.
+ * Copyright (c) 2026 MOHD_Gs. All rights reserved.
  *
  * Main entry point for the dedicated server mod.
  *
@@ -67,10 +70,11 @@ public class SolidusMod implements DedicatedServerModInitializer {
         BalanceManager balanceManager = economyEngine.getBalanceManager();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             BalanceCommand.register(dispatcher, balanceManager);
-            PayCommand.register(dispatcher, balanceManager);
+            PayCommand.register(dispatcher, economyEngine);
             BaltopCommand.register(dispatcher, balanceManager);
             ShopCommand.register(dispatcher, shopManager);
             AuctionCommand.register(dispatcher, auctionManager);
+            TransactionsCommand.register(dispatcher, economyEngine);
         });
 
         // Register server shutdown hook for clean database closure
@@ -87,6 +91,14 @@ public class SolidusMod implements DedicatedServerModInitializer {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             auctionManager.setServer(server);
             LOGGER.info("Solidus: MinecraftServer instance injected into AuctionManager.");
+        });
+
+        // Deliver pending offline notifications when a player joins
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            TransactionLog transactionLog = economyEngine.getTransactionLog();
+            if (transactionLog != null) {
+                transactionLog.deliverPendingNotifications(handler.getPlayer());
+            }
         });
 
         LOGGER.info("Solidus initialized successfully. Economy engine online.");
