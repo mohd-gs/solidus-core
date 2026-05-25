@@ -1,11 +1,14 @@
 # Solidus
 
+[![Platform](https://img.shields.io/badge/Platform-Fabric-blue.svg)](https://fabricmc.net/)
+[![Minecraft Version](https://img.shields.io/badge/Minecraft-26.1.x-green.svg)](https://www.minecraft.net/)
+[![Modrinth](https://img.shields.io/badge/Download-Modrinth-00AF5C.svg)](coming soon..)
 
 
 
 
 
-\
+
 
 ### Server-side economy, shop, and auction system for Minecraft Fabric
 
