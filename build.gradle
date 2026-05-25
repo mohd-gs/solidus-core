@@ -5,7 +5,7 @@ plugins {
 
 // ──────────────────────────────────────────────────────────
 // Solidus - Advanced Server-Side Economy & Commerce Engine
-// Minecraft 1.21.7 | Fabric Loader 0.19.2+ | Java 25
+// Minecraft 26.1.x | Fabric Loader 0.19.2+ | Java 25
 // ──────────────────────────────────────────────────────────
 //
 // ⚠️  IMPORTANT: INTERMEDIARY NAMES IN THE IDE

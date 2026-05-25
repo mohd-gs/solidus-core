@@ -8,28 +8,26 @@ import java.util.UUID;
  * Each auction entry represents an item listed by a player for sale
  * at a fixed price. Other players can browse and purchase these items.
  *
- * Concurrency Safety:
- * - The UUID uniquely identifies each listing globally
- * - The 'sold' flag is protected by database row-level locking
- *   during purchase transactions to prevent duplication glitches
+ * Listing Lifecycle:
+ * 1. ACTIVE  - Item listed via /ah sell <price> (status=0)
+ * 2. SOLD    - Purchased by another player (status=1)
+ * 3. EXPIRED - Listing duration exceeded, item returned to seller (status=2)
  *
- * Lifecycle:
- * 1. CREATED - Item listed via /ah sell <price>
- * 2. ACTIVE  - Visible in the auction house GUI
- * 3. SOLD    - Purchased by another player (transaction complete)
- * 4. EXPIRED - Listing duration exceeded, item returned to seller
+ * The ListingStatus enum properly represents all three states,
+ * replacing the previous boolean 'sold' field which could not
+ * distinguish between ACTIVE and EXPIRED listings.
  */
 public record AuctionEntry(
-    UUID listingId,        // Unique identifier for this listing
-    UUID sellerUuid,       // The player who listed the item
-    String sellerName,     // Cached seller display name
-    String materialName,   // Minecraft Material name for the item
-    int quantity,          // Number of items in the stack
-    String itemNbt,        // Serialized item data (for enchanted/custom items)
-    double price,          // Listed sale price in Solidus currency
-    long listedTimestamp,  // Epoch millis when the item was listed
-    long expireTimestamp,  // Epoch millis when the listing expires
-    boolean sold           // Whether the item has been purchased
+    UUID listingId,           // Unique identifier for this listing
+    UUID sellerUuid,          // The player who listed the item
+    String sellerName,        // Cached seller display name
+    String materialName,      // Minecraft Material name for the item
+    int quantity,             // Number of items in the stack
+    String itemNbt,           // Serialized item data (for enchanted/custom items)
+    double price,             // Listed sale price in Solidus currency
+    long listedTimestamp,     // Epoch millis when the item was listed
+    long expireTimestamp,     // Epoch millis when the listing expires
+    ListingStatus status      // Current status of the listing
 ) {
 
     /**
@@ -61,6 +59,7 @@ public record AuctionEntry(
 
     /**
      * Creates a new AuctionEntry with auto-generated IDs and timestamps.
+     * New entries always start with ACTIVE status.
      */
     public static AuctionEntry create(UUID sellerUuid, String sellerName,
                                        String materialName, int quantity,
@@ -76,22 +75,22 @@ public record AuctionEntry(
             price,
             now,
             now + DEFAULT_DURATION_MS,
-            false
+            ListingStatus.ACTIVE
         );
     }
 
     /**
-     * Checks if this listing has expired.
+     * Checks if this listing has expired (ACTIVE status past its expiry time).
      */
     public boolean isExpired() {
-        return !sold && System.currentTimeMillis() > expireTimestamp;
+        return status == ListingStatus.ACTIVE && System.currentTimeMillis() > expireTimestamp;
     }
 
     /**
      * Checks if this listing is currently active (not sold, not expired).
      */
     public boolean isActive() {
-        return !sold && !isExpired();
+        return status == ListingStatus.ACTIVE && !isExpired();
     }
 
     /**

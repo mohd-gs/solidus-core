@@ -8,6 +8,7 @@ import com.solidus.util.TextUtil;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 
@@ -39,22 +40,24 @@ import java.util.concurrent.TimeUnit;
  *   without any overlap, completely eliminating race conditions without needing
  *   database-level locking (BEGIN IMMEDIATE).
  *
- *   Previous approach: Used BEGIN IMMEDIATE which locks the ENTIRE SQLite
- *   database file (not row-level as commonly misunderstood). This caused
- *   "database is locked" errors when concurrent operations from different
- *   subsystems (economy + auction) occurred simultaneously.
+ * - No Server Thread Blocking:
+ *   All async operations use CompletableFuture chaining (.thenAccept, .thenCompose)
+ *   instead of .join(). This ensures the server tick thread is never blocked,
+ *   preventing lag spikes for all players.
  *
- *   Current approach: Single-Threaded Executor Queue ensures all auction
- *   database mutations are serialized in memory. The executor processes
- *   one transaction at a time, making it impossible for two players to
- *   purchase the same listing simultaneously. Performance is hundreds of
- *   times faster than database-level locking with zero lock contention.
+ * - MinecraftServer Injection:
+ *   The server instance is injected via ServerLifecycleEvents.SERVER_STARTED
+ *   instead of the static MinecraftServer.getServer() call, which does not exist
+ *   in the Fabric modding environment.
  *
- * - Listing Fee: A small fee (2%) is charged when listing items to discourage
- *   spam listings and stabilize the economy.
+ * - Listing Status:
+ *   Uses ListingStatus enum (ACTIVE, SOLD, EXPIRED) instead of a boolean,
+ *   properly representing the three distinct states of an auction listing.
  *
- * - Expiration: Listings expire after 72 hours by default. Expired items are
- *   returned to the seller's inventory or held for manual retrieval.
+ * - Persistent Database Connection:
+ *   Uses a single persistent SQLite connection per executor instead of opening
+ *   a new connection for every operation. Since all operations are serialized
+ *   through the single-threaded executor, connection sharing is safe.
  */
 public class AuctionManager {
 
@@ -70,18 +73,24 @@ public class AuctionManager {
             price REAL NOT NULL,
             listed_timestamp INTEGER NOT NULL,
             expire_timestamp INTEGER NOT NULL,
-            sold INTEGER NOT NULL DEFAULT 0
+            status INTEGER NOT NULL DEFAULT 0
         )
     """;
     private static final String CREATE_INDEX_SQL = """
         CREATE INDEX IF NOT EXISTS idx_active_listings
-        ON auction_listings (sold, expire_timestamp)
+        ON auction_listings (status, expire_timestamp)
     """;
 
     private final EconomyEngine economyEngine;
     private final ExecutorService asyncExecutor;
     private final String databaseUrl;
     private volatile boolean initialized = false;
+
+    /** Injected MinecraftServer instance — set via setServer() during SERVER_STARTED */
+    private volatile MinecraftServer server;
+
+    /** Persistent database connection — shared across all executor operations */
+    private volatile Connection persistentConnection;
 
     public AuctionManager(EconomyEngine economyEngine) {
         this.economyEngine = economyEngine;
@@ -96,11 +105,26 @@ public class AuctionManager {
     }
 
     /**
+     * Injects the MinecraftServer instance.
+     * Called via ServerLifecycleEvents.SERVER_STARTED in SolidusMod.
+     *
+     * This is required because MinecraftServer.getServer() is NOT available
+     * in the Fabric modding environment. The server instance must be injected
+     * through lifecycle events.
+     */
+    public void setServer(MinecraftServer server) {
+        this.server = server;
+        SolidusMod.LOGGER.info("AuctionManager: MinecraftServer instance injected.");
+    }
+
+    /**
      * Initializes the auction database.
      */
     public void initialize() {
-        try (Connection conn = getConnection()) {
-            try (Statement stmt = conn.createStatement()) {
+        try {
+            // Open persistent connection (safe because single-threaded executor serializes all access)
+            persistentConnection = DriverManager.getConnection(databaseUrl);
+            try (Statement stmt = persistentConnection.createStatement()) {
                 stmt.execute("PRAGMA journal_mode=WAL");
                 stmt.execute("PRAGMA synchronous=NORMAL");
                 stmt.execute(CREATE_TABLE_SQL);
@@ -114,7 +138,7 @@ public class AuctionManager {
     }
 
     /**
-     * Shuts down the auction database executor.
+     * Shuts down the auction database executor and closes the persistent connection.
      */
     public void shutdown() {
         asyncExecutor.shutdown();
@@ -126,6 +150,16 @@ public class AuctionManager {
             asyncExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
+
+        // Close persistent connection
+        if (persistentConnection != null) {
+            try {
+                persistentConnection.close();
+                SolidusMod.LOGGER.info("Auction database connection closed.");
+            } catch (SQLException e) {
+                SolidusMod.LOGGER.error("Failed to close auction database connection", e);
+            }
+        }
     }
 
     // ── Listing Operations ────────────────────────────────
@@ -133,9 +167,9 @@ public class AuctionManager {
     /**
      * Lists an item from the player's main hand on the auction house.
      *
-     * Flow:
+     * Flow (fully async — no server thread blocking):
      * 1. Validate the player is holding an item
-     * 2. Calculate and deduct the listing fee
+     * 2. Calculate and deduct the listing fee (async chain)
      * 3. Remove the item from the player's inventory
      * 4. Create the auction listing in the database
      *
@@ -166,53 +200,59 @@ public class AuctionManager {
         double listingFee = AuctionEntry.calculateListingFee(price);
         BalanceManager balanceManager = economyEngine.getBalanceManager();
 
-        // Check if player can afford the listing fee
-        double balance = balanceManager.getBalance(player).join();
-        if (balance < listingFee) {
-            player.sendSystemMessage(TextUtil.error(
-                "Listing fee is " + CurrencyUtil.format(listingFee) +
-                ". You only have " + CurrencyUtil.format(balance)));
-            return;
-        }
-
-        // Deduct listing fee
-        double newBalance = balanceManager.subtractBalance(player, listingFee).join();
-        if (newBalance < 0) {
-            player.sendSystemMessage(TextUtil.error("Failed to deduct listing fee. Please try again."));
-            return;
-        }
-
-        // Create the listing
-        String materialName = heldItem.getItem().toString().toUpperCase();
-        int quantity = heldItem.getCount();
-        String itemNbt = serializeItemStack(heldItem);
-
-        AuctionEntry entry = AuctionEntry.create(
-            player.getUUID(), player.getName().getString(),
-            materialName, quantity, itemNbt, price
-        );
-
-        // Save to database first, THEN remove item from player's hand
-        // This prevents item loss if the database save fails
-        saveListing(entry).thenAccept(success -> {
+        // Full async chain — no .join(), no server thread blocking
+        balanceManager.getBalance(player).thenAccept(balance -> {
             player.server.execute(() -> {
-                if (success) {
-                    // Item saved successfully - now safe to remove from player
-                    player.getInventory().setItem(player.getInventory().selected, net.minecraft.world.item.ItemStack.EMPTY);
-
-                    player.sendSystemMessage(
-                        TextUtil.success("Item listed on the Auction House for ")
-                            .append(TextUtil.currency(CurrencyUtil.format(price)))
-                            .append(TextUtil.styled(" (Fee: " + CurrencyUtil.format(listingFee) + ")", ChatFormatting.GRAY))
-                    );
-                } else {
-                    // CRITICAL: Listing save failed after fee deduction - attempt refund
-                    SolidusMod.LOGGER.error("CRITICAL: Auction listing save failed for {}! Refunding fee.",
-                        player.getName().getString());
+                if (balance < listingFee) {
                     player.sendSystemMessage(TextUtil.error(
-                        "Failed to list item. Listing fee refunded."));
-                    balanceManager.addBalance(player, listingFee);
+                        "Listing fee is " + CurrencyUtil.format(listingFee) +
+                        ". You only have " + CurrencyUtil.format(balance)));
+                    return;
                 }
+
+                // Deduct listing fee asynchronously
+                balanceManager.subtractBalance(player, listingFee).thenAccept(newBalance -> {
+                    player.server.execute(() -> {
+                        if (newBalance < 0) {
+                            player.sendSystemMessage(TextUtil.error("Failed to deduct listing fee. Please try again."));
+                            return;
+                        }
+
+                        // Create the listing
+                        String materialName = heldItem.getItem().toString().toUpperCase();
+                        int quantity = heldItem.getCount();
+                        String itemNbt = serializeItemStack(heldItem);
+
+                        AuctionEntry entry = AuctionEntry.create(
+                            player.getUUID(), player.getName().getString(),
+                            materialName, quantity, itemNbt, price
+                        );
+
+                        // Save to database first, THEN remove item from player's hand
+                        // This prevents item loss if the database save fails
+                        saveListing(entry).thenAccept(success -> {
+                            player.server.execute(() -> {
+                                if (success) {
+                                    // Item saved successfully — now safe to remove from player
+                                    player.getInventory().setItem(player.getInventory().selected, ItemStack.EMPTY);
+
+                                    player.sendSystemMessage(
+                                        TextUtil.success("Item listed on the Auction House for ")
+                                            .append(TextUtil.currency(CurrencyUtil.format(price)))
+                                            .append(TextUtil.styled(" (Fee: " + CurrencyUtil.format(listingFee) + ")", ChatFormatting.GRAY))
+                                    );
+                                } else {
+                                    // CRITICAL: Listing save failed after fee deduction — attempt refund
+                                    SolidusMod.LOGGER.error("CRITICAL: Auction listing save failed for {}! Refunding fee.",
+                                        player.getName().getString());
+                                    player.sendSystemMessage(TextUtil.error(
+                                        "Failed to list item. Listing fee refunded."));
+                                    balanceManager.addBalance(player, listingFee);
+                                }
+                            });
+                        });
+                    });
+                });
             });
         });
     }
@@ -226,15 +266,13 @@ public class AuctionManager {
      * All auction database mutations are processed through a single-threaded
      * executor, which guarantees that only one transaction runs at a time.
      * When two players try to buy the same listing simultaneously:
-     * - The first player's request enters the executor and marks the listing as sold
+     * - The first player's request enters the executor and marks the listing as SOLD
      * - The second player's request enters the queue and finds the listing already sold
      * - No database locking (BEGIN IMMEDIATE) is needed — the executor IS the lock
      *
-     * Flow Restructure (No Cross-Executor Blocking):
-     * 1. On the auction executor: Verify and mark the listing as sold atomically
-     * 2. Back on the server thread: Process the financial transaction
-     *    (balance reads are instant from the in-memory cache)
-     * 3. Give the item to the buyer
+     * No Server Thread Blocking:
+     * The entire purchase flow uses CompletableFuture chaining instead of .join().
+     * The server tick thread is never blocked, preventing lag spikes.
      *
      * @param buyer      The player purchasing the item
      * @param listingId  The UUID of the listing to purchase
@@ -242,13 +280,13 @@ public class AuctionManager {
     public void purchaseItem(ServerPlayer buyer, UUID listingId) {
         BalanceManager balanceManager = economyEngine.getBalanceManager();
 
-        // Step 1: On the auction executor, verify and mark as sold atomically
+        // Step 1: On the auction executor, verify and mark as SOLD atomically
         CompletableFuture.supplyAsync(() -> {
-            try (Connection conn = getConnection()) {
+            try {
                 // Check if the listing is still active
-                String selectSql = "SELECT * FROM auction_listings WHERE listing_id = ? AND sold = 0";
+                String selectSql = "SELECT * FROM auction_listings WHERE listing_id = ? AND status = 0";
                 AuctionEntry entry = null;
-                try (PreparedStatement ps = conn.prepareStatement(selectSql)) {
+                try (PreparedStatement ps = persistentConnection.prepareStatement(selectSql)) {
                     ps.setString(1, listingId.toString());
                     try (ResultSet rs = ps.executeQuery()) {
                         if (rs.next()) {
@@ -270,10 +308,10 @@ public class AuctionManager {
                     return "OWN_ITEM";
                 }
 
-                // Mark as sold IMMEDIATELY (single-threaded executor guarantees
+                // Mark as SOLD IMMEDIATELY (single-threaded executor guarantees
                 // no other thread can interfere — this IS the atomic operation)
-                String updateSql = "UPDATE auction_listings SET sold = 1 WHERE listing_id = ?";
-                try (PreparedStatement ps = conn.prepareStatement(updateSql)) {
+                String updateSql = "UPDATE auction_listings SET status = 1 WHERE listing_id = ?";
+                try (PreparedStatement ps = persistentConnection.prepareStatement(updateSql)) {
                     ps.setString(1, listingId.toString());
                     ps.executeUpdate();
                 }
@@ -304,51 +342,57 @@ public class AuctionManager {
 
                 AuctionEntry entry = (AuctionEntry) result;
 
-                // Check if buyer can afford it (instant read from in-memory cache)
-                double buyerBalance = balanceManager.getBalance(buyer).join();
-                if (buyerBalance < entry.price()) {
-                    // Buyer can't afford — rollback the sale
-                    SolidusMod.LOGGER.warn("Auction buyer {} cannot afford listing {}. Rolling back.",
-                        buyer.getName().getString(), entry.listingId());
-                    markAsUnsold(entry.listingId());
-                    buyer.sendSystemMessage(TextUtil.error("Insufficient funds!"));
-                    return;
-                }
-
-                // Deduct from buyer (processed through the economy single-threaded executor)
-                double newBuyerBalance = balanceManager.subtractBalance(buyer, entry.price()).join();
-                if (newBuyerBalance < 0) {
-                    // CRITICAL: Balance deduction failed after marking sold — rollback
-                    SolidusMod.LOGGER.error("CRITICAL: Balance deduction failed after marking listing {} as sold! Rolling back.",
-                        entry.listingId());
-                    markAsUnsold(entry.listingId());
-                    buyer.sendSystemMessage(TextUtil.error("Transaction failed. Please try again."));
-                    return;
-                }
-
-                // Pay the seller
-                balanceManager.addBalance(entry.sellerUuid(), entry.sellerName(), entry.price())
-                    .thenAccept(newSellerBalance -> {
-                        if (newSellerBalance < 0) {
-                            SolidusMod.LOGGER.error("CRITICAL: Failed to pay auction seller {} for listing {}",
-                                entry.sellerName(), entry.listingId());
+                // Check if buyer can afford it — full async chain, no .join()
+                balanceManager.getBalance(buyer).thenAccept(buyerBalance -> {
+                    buyer.server.execute(() -> {
+                        if (buyerBalance < entry.price()) {
+                            // Buyer can't afford — rollback the sale
+                            SolidusMod.LOGGER.warn("Auction buyer {} cannot afford listing {}. Rolling back.",
+                                buyer.getName().getString(), entry.listingId());
+                            markAsUnsold(entry.listingId());
+                            buyer.sendSystemMessage(TextUtil.error("Insufficient funds!"));
+                            return;
                         }
+
+                        // Deduct from buyer — async chain, no .join()
+                        balanceManager.subtractBalance(buyer, entry.price()).thenAccept(newBuyerBalance -> {
+                            buyer.server.execute(() -> {
+                                if (newBuyerBalance < 0) {
+                                    // CRITICAL: Balance deduction failed after marking sold — rollback
+                                    SolidusMod.LOGGER.error("CRITICAL: Balance deduction failed after marking listing {} as sold! Rolling back.",
+                                        entry.listingId());
+                                    markAsUnsold(entry.listingId());
+                                    buyer.sendSystemMessage(TextUtil.error("Transaction failed. Please try again."));
+                                    return;
+                                }
+
+                                // Pay the seller
+                                balanceManager.addBalance(entry.sellerUuid(), entry.sellerName(), entry.price())
+                                    .thenAccept(newSellerBalance -> {
+                                        if (newSellerBalance < 0) {
+                                            SolidusMod.LOGGER.error("CRITICAL: Failed to pay auction seller {} for listing {}",
+                                                entry.sellerName(), entry.listingId());
+                                        }
+                                    });
+
+                                // Give item to buyer
+                                ItemStack purchasedItem = deserializeItemStack(entry.itemNbt(), entry.materialName(), entry.quantity());
+                                if (!buyer.getInventory().add(purchasedItem)) {
+                                    buyer.drop(purchasedItem, false);
+                                    buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
+                                }
+
+                                // Success notification
+                                buyer.sendSystemMessage(
+                                    TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
+                                        .append(TextUtil.currency(CurrencyUtil.format(entry.price())))
+                                        .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                                        .append(TextUtil.currency(CurrencyUtil.format(newBuyerBalance)))
+                                );
+                            });
+                        });
                     });
-
-                // Give item to buyer
-                ItemStack purchasedItem = deserializeItemStack(entry.itemNbt(), entry.materialName(), entry.quantity());
-                if (!buyer.getInventory().add(purchasedItem)) {
-                    buyer.drop(purchasedItem, false);
-                    buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
-                }
-
-                // Success notification
-                buyer.sendSystemMessage(
-                    TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
-                        .append(TextUtil.currency(CurrencyUtil.format(entry.price())))
-                        .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-                        .append(TextUtil.currency(CurrencyUtil.format(newBuyerBalance)))
-                );
+                });
             });
         });
     }
@@ -374,9 +418,8 @@ public class AuctionManager {
     public CompletableFuture<List<AuctionEntry>> getActiveListings() {
         return CompletableFuture.supplyAsync(() -> {
             List<AuctionEntry> entries = new ArrayList<>();
-            String sql = "SELECT * FROM auction_listings WHERE sold = 0 AND expire_timestamp > ? ORDER BY listed_timestamp DESC";
-            try (Connection conn = getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            String sql = "SELECT * FROM auction_listings WHERE status = 0 AND expire_timestamp > ? ORDER BY listed_timestamp DESC";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setLong(1, System.currentTimeMillis());
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -396,9 +439,8 @@ public class AuctionManager {
     public CompletableFuture<List<AuctionEntry>> getListingsBySeller(UUID sellerUuid) {
         return CompletableFuture.supplyAsync(() -> {
             List<AuctionEntry> entries = new ArrayList<>();
-            String sql = "SELECT * FROM auction_listings WHERE seller_uuid = ? AND sold = 0 AND expire_timestamp > ? ORDER BY listed_timestamp DESC";
-            try (Connection conn = getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            String sql = "SELECT * FROM auction_listings WHERE seller_uuid = ? AND status = 0 AND expire_timestamp > ? ORDER BY listed_timestamp DESC";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setString(1, sellerUuid.toString());
                 ps.setLong(2, System.currentTimeMillis());
                 try (ResultSet rs = ps.executeQuery()) {
@@ -421,10 +463,9 @@ public class AuctionManager {
      */
     public void processExpiredListings() {
         CompletableFuture.supplyAsync(() -> {
-            String sql = "SELECT * FROM auction_listings WHERE sold = 0 AND expire_timestamp <= ?";
+            String sql = "SELECT * FROM auction_listings WHERE status = 0 AND expire_timestamp <= ?";
             List<AuctionEntry> expired = new ArrayList<>();
-            try (Connection conn = getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setLong(1, System.currentTimeMillis());
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -436,15 +477,17 @@ public class AuctionManager {
             }
             return expired;
         }, asyncExecutor).thenAccept(expired -> {
+            MinecraftServer currentServer = this.server;
+            if (currentServer == null) return;
+
             for (AuctionEntry entry : expired) {
-                // Mark expired listings as sold=2 (expired status) instead of leaving at sold=0
+                // Mark expired listings as status=2 (EXPIRED) instead of leaving at status=0
                 // This prevents them from reappearing in active listings
                 markAsExpired(entry.listingId());
 
                 // Return items to online sellers immediately
-                net.minecraft.server.MinecraftServer server = net.minecraft.server.MinecraftServer.getServer();
-                if (server != null) {
-                    net.minecraft.server.level.ServerPlayer seller = server.getPlayerList().getPlayer(entry.sellerUuid());
+                currentServer.execute(() -> {
+                    ServerPlayer seller = currentServer.getPlayerList().getPlayer(entry.sellerUuid());
                     if (seller != null) {
                         ItemStack returnedItem = deserializeItemStack(
                             entry.itemNbt(), entry.materialName(), entry.quantity());
@@ -455,9 +498,9 @@ public class AuctionManager {
                             TextUtil.warning("Your auction listing for " + entry.quantity() + "x " +
                                 entry.materialName() + " has expired and been returned to you."));
                     }
-                    // Offline sellers: items are marked as expired (sold=2)
+                    // Offline sellers: items are marked as expired (status=2)
                     // A future /ah collect command could retrieve these
-                }
+                });
 
                 SolidusMod.LOGGER.info("Expired listing processed: seller={}, item={}",
                     entry.sellerName(), entry.materialName());
@@ -471,20 +514,15 @@ public class AuctionManager {
         return com.solidus.util.ConfigManager.getConfigDir().toAbsolutePath() + "/" + DATABASE_NAME;
     }
 
-    private Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(databaseUrl);
-    }
-
     private CompletableFuture<Boolean> saveListing(AuctionEntry entry) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
                 INSERT INTO auction_listings
                 (listing_id, seller_uuid, seller_name, material_name, quantity,
-                 item_nbt, price, listed_timestamp, expire_timestamp, sold)
+                 item_nbt, price, listed_timestamp, expire_timestamp, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
-            try (Connection conn = getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setString(1, entry.listingId().toString());
                 ps.setString(2, entry.sellerUuid().toString());
                 ps.setString(3, entry.sellerName());
@@ -494,7 +532,7 @@ public class AuctionManager {
                 ps.setDouble(7, entry.price());
                 ps.setLong(8, entry.listedTimestamp());
                 ps.setLong(9, entry.expireTimestamp());
-                ps.setInt(10, entry.sold() ? 1 : 0);
+                ps.setInt(10, entry.status().ordinal()); // 0=ACTIVE, 1=SOLD, 2=EXPIRED
                 ps.executeUpdate();
                 return true;
             } catch (SQLException e) {
@@ -506,9 +544,8 @@ public class AuctionManager {
 
     private void markAsUnsold(UUID listingId) {
         CompletableFuture.runAsync(() -> {
-            String sql = "UPDATE auction_listings SET sold = 0 WHERE listing_id = ?";
-            try (Connection conn = getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            String sql = "UPDATE auction_listings SET status = 0 WHERE listing_id = ?";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setString(1, listingId.toString());
                 ps.executeUpdate();
             } catch (SQLException e) {
@@ -518,14 +555,13 @@ public class AuctionManager {
     }
 
     /**
-     * Marks a listing as expired (sold=2) to distinguish from active (0) and purchased (1).
+     * Marks a listing as expired (status=2) to distinguish from active (0) and purchased (1).
      * Expired items can be retrieved by the seller via a future /ah collect command.
      */
     private void markAsExpired(UUID listingId) {
         CompletableFuture.runAsync(() -> {
-            String sql = "UPDATE auction_listings SET sold = 2 WHERE listing_id = ?";
-            try (Connection conn = getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
+            String sql = "UPDATE auction_listings SET status = 2 WHERE listing_id = ?";
+            try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
                 ps.setString(1, listingId.toString());
                 ps.executeUpdate();
             } catch (SQLException e) {
@@ -535,6 +571,8 @@ public class AuctionManager {
     }
 
     private AuctionEntry mapResultSetToEntry(ResultSet rs) throws SQLException {
+        int statusCode = rs.getInt("status");
+        ListingStatus status = ListingStatus.fromCode(statusCode);
         return new AuctionEntry(
             UUID.fromString(rs.getString("listing_id")),
             UUID.fromString(rs.getString("seller_uuid")),
@@ -545,23 +583,25 @@ public class AuctionManager {
             rs.getDouble("price"),
             rs.getLong("listed_timestamp"),
             rs.getLong("expire_timestamp"),
-            rs.getInt("sold") == 1
+            status
         );
     }
 
     private String serializeItemStack(ItemStack stack) {
         // Serialize the item to a string representation using NBT
-        // For enchanted/custom items, full NBT serialization is required
+        // Uses injected MinecraftServer instance instead of static getServer()
         try {
-            // Use the server's registry access for proper serialization
-            var registryAccess = net.minecraft.server.MinecraftServer.getServer().registryAccess();
-            var tag = stack.save(registryAccess);
-            return tag.toString();
+            MinecraftServer currentServer = this.server;
+            if (currentServer != null) {
+                var registryAccess = currentServer.registryAccess();
+                var tag = stack.save(registryAccess);
+                return tag.toString();
+            }
         } catch (Exception e) {
-            // Fallback to simple material name serialization
             SolidusMod.LOGGER.warn("Item NBT serialization failed, using material fallback: {}", e.getMessage());
-            return stack.getItem().toString().toUpperCase();
         }
+        // Fallback to simple material name serialization
+        return stack.getItem().toString().toUpperCase();
     }
 
     private ItemStack deserializeItemStack(String itemNbt, String materialName, int quantity) {
@@ -569,9 +609,12 @@ public class AuctionManager {
             // Try to deserialize from NBT
             if (itemNbt != null && itemNbt.startsWith("{")) {
                 var tag = (net.minecraft.nbt.CompoundTag) net.minecraft.nbt.TagParser.parseTag(itemNbt);
-                var registryAccess = net.minecraft.server.MinecraftServer.getServer().registryAccess();
-                var parsed = ItemStack.parseOptional(registryAccess, tag);
-                if (!parsed.isEmpty()) return parsed;
+                MinecraftServer currentServer = this.server;
+                if (currentServer != null) {
+                    var registryAccess = currentServer.registryAccess();
+                    var parsed = ItemStack.parseOptional(registryAccess, tag);
+                    if (!parsed.isEmpty()) return parsed;
+                }
             }
         } catch (Exception e) {
             SolidusMod.LOGGER.warn("Failed to deserialize item NBT, falling back to material: {}", materialName);

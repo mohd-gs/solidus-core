@@ -16,6 +16,8 @@ import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 
+import net.minecraft.server.MinecraftServer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,6 +80,13 @@ public class SolidusMod implements DedicatedServerModInitializer {
             economyEngine.shutdown();
             rateLimiter.clear();
             LOGGER.info("Solidus shutdown complete. All data saved.");
+        });
+
+        // Inject MinecraftServer instance into AuctionManager
+        // Required because MinecraftServer.getServer() is NOT available in Fabric
+        ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+            auctionManager.setServer(server);
+            LOGGER.info("Solidus: MinecraftServer instance injected into AuctionManager.");
         });
 
         LOGGER.info("Solidus initialized successfully. Economy engine online.");
