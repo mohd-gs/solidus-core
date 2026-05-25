@@ -1,34 +1,27 @@
-<div align="center">
-
 # Solidus
 
-[![Platform](https://img.shields.io/badge/Platform-Fabric-blue.svg)](https://fabricmc.net/)
-[![Minecraft](https://img.shields.io/badge/Minecraft-26.1.x-green.svg)](https://www.minecraft.net/)
-[![License](https://img.shields.io/badge/License-SCCL_v1.0-red.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.0.0--beta-orange.svg)](https://github.com/mohammad-salah-qasiaa/solidus)
-[![Java](https://img.shields.io/badge/Java-25-purple.svg)](https://adoptium.net/)
-[![Side](https://img.shields.io/badge/Server-Side-brightgreen.svg)]()
+### Server-side economy, shop, and auction system for Minecraft Fabric
 
-**Server-side economy, shop, and auction system for Minecraft Fabric — designed for vanilla compatibility and stable long-term economies.**
-
-</div>
+Stable economies · Vanilla compatibility · No client installation
 
 ---
 
 ## Why Solidus?
 
-- **Fully server-side** — Zero client installation, zero resource packs, zero custom textures
-- **No client installation required** — Works with any Minecraft client, modded or vanilla
-- **Dynamic economy** — In-memory cache with async SQLite persistence, memory-backed balance reads
-- **Auction House** — Player-driven marketplace with race-condition protection
-- **Anti-farm balancing** — Hardcoded deflation table neutralizes Iron Farms, Raid Farms, Piglin Bartering, and Trial Chamber exploits
-- **Vanilla compatible** — Native ScreenHandler GUIs (GENERIC_9x6), no third-party GUI libraries
+Solidus is a complete **server-side economy and commerce engine** for Minecraft Fabric.
 
-<!-- Add screenshot or GIF here -->
-<!--
-![Solidus Shop GUI](assets/shop-preview.gif)
-![Solidus Auction House](assets/auction-preview.gif)
--->
+Create long-term survival economies without requiring client mods, resource packs, custom assets, or plugin stacks.
+
+### Highlights
+
+* Fully server-side architecture
+* Works with vanilla and modded clients
+* Built-in virtual economy
+* GUI-based server shop
+* Player-driven auction house
+* Anti-inflation economy balancing
+* Crash-resilient persistence
+* Minimal operational overhead
 
 ---
 
@@ -36,258 +29,281 @@
 
 ### Economy
 
-In-memory balance cache backed by asynchronous SQLite with WAL mode — memory-backed balance reads with no database hits. Single-Threaded Executor Queue serializes all mutations, avoiding race conditions through serialized execution without database-level locks. Players start with 500 S$ (configurable). Peer-to-peer transfers via `/pay` with anti-exploit validation. Server-wide leaderboards via `/baltop`.
+A lightweight virtual economy designed for multiplayer survival servers.
 
-### Shop
+Features include:
 
-Virtual chest GUI with 11 categories and 120+ items. Left-click buys 1, right-click sells 1, shift-click trades a full stack. All items are display-only — moving, dragging, and shift-clicking are blocked programmatically via Mixin packet interception. Prices are loaded from `shop.json` and support hot-reload without server restart. Text components parsed using Minecraft's official `ComponentSerialization.CODEC`.
+* Memory-backed balance reads
+* Async SQLite persistence
+* Configurable starting balance
+* Secure player transfers (`/pay`)
+* Global wealth leaderboard (`/baltop`)
+* Consistency-focused execution model
 
-### Auction House
+---
 
-Player-driven `/ah` marketplace. List any item from your main hand with `/ah sell <price>`. 72-hour listing duration with automatic expiration. 2% listing fee discourages spam listings. Race-condition protection via Single-Threaded Executor Queue — two players cannot purchase the same listing simultaneously. Armor Trims and progression items are excluded from the shop, forcing real player commerce.
+### Server Shop (`/shop`)
+
+Virtual shop interface powered entirely by the server.
+
+Includes:
+
+* 11 categories
+* 120+ configured items
+* Stack trading support
+* Hot-reload configuration
+* Display-only GUI protection
+
+---
+
+### Auction House (`/ah`)
+
+Marketplace for player-to-player trading.
+
+Capabilities:
+
+* Item listing directly from inventory
+* Listing expiration
+* Listing fee support
+* Purchase protection
+* Progression-focused balancing
+
+---
 
 ### Economy Protection
 
-Hardcoded anti-farm deflation table prevents configuration tampering and economy exploitation:
+Solidus includes balancing mechanisms to reduce the economic impact of automated farms.
 
-| Material | Reduction | Reason |
-|----------|-----------|--------|
-| Emerald | 70% | Raid Farms / Trading Halls |
-| Gold | 50% | Piglin Bartering Farms |
-| Shulker Shell/Box | 50% | Shulker Farms |
-| Mace | 60% | Trial Chamber Farms |
-| Heavy Core | 60% | Trial Chamber Farms |
-| Breeze Rod | 50% | Trial Chamber Farms |
-| Trial Keys | 70% | Trial Chamber Farms |
-| Iron | 30% | Iron Farms |
-| + 8 more materials | 20-60% | Various farm exploits |
+Examples:
+
+| Resource             | Reduction             |
+| -------------------- | --------------------- |
+| Emerald              | 70%                   |
+| Gold                 | 50%                   |
+| Iron                 | 30%                   |
+| Trial rewards        | 50–70%                |
+| Additional materials | Configured internally |
+
+---
+
+## Screenshots
+
+> Screenshots and GIF previews coming soon.
+
+Suggested media:
+
+* Shop GUI
+* Auction interface
+* Leaderboards
+* Configuration examples
 
 ---
 
 ## Download
 
-| Platform | Link |
-|----------|------|
-| GitHub Releases | [Latest Release](https://github.com/mohammad-salah-qasiaa/solidus/releases) |
-| Modrinth | *Coming soon* |
+| Platform        | Link        |
+| --------------- | ----------- |
+| GitHub Releases | [Releases](https://github.com/mohammad-salah-qasiaa/solidus/releases) |
+| Modrinth        | Coming soon |
 
 ---
 
 ## Installation
 
-> **Requirements:** Minecraft 26.1.x · Java 25+ · Fabric Loader >= 0.19.2
+> Requirements: Minecraft 26.1.x · Java 25 · Fabric Loader
 
-1. Install [Fabric Loader](https://fabricmc.net/use/) `>= 0.19.2` on your server
-2. Download the latest `.jar` from [Releases](https://github.com/mohammad-salah-qasiaa/solidus/releases)
-3. Place the `.jar` in your server's `mods/` directory
-4. Start the server — Solidus will auto-generate `config/solidus/shop.json`
-5. Customize `shop.json` as needed (supports hot-reload, no restart required)
+1. Install Fabric Loader
+2. Download the latest Solidus release
+3. Place the `.jar` into `mods/`
+4. Start the server
+5. Configure `config/solidus/shop.json`
+
+No client installation required.
 
 ---
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/balance` / `/bal` | Display your current Solidus balance |
-| `/pay <player> <amount>` | Transfer currency to another player |
-| `/baltop` | View the server's wealthiest players (Top 10) |
-| `/shop` | Open the virtual server shop GUI |
-| `/ah` | Browse the Auction House listings |
-| `/ah sell <price>` | List the item in your main hand for sale |
+| Command    | Description        |
+| ---------- | ------------------ |
+| `/balance` | Show balance       |
+| `/pay`     | Transfer currency  |
+| `/baltop`  | Wealth leaderboard |
+| `/shop`    | Open shop          |
+| `/ah`      | Open auction       |
+| `/ah sell` | Create listing     |
 
 ---
 
 ## Configuration
 
-Solidus uses a single `shop.json` file for all shop pricing. The file is auto-generated on first run at `config/solidus/shop.json`.
+Solidus generates configuration automatically.
+
+Location:
+
+```text
+config/solidus/shop.json
+```
+
+Example:
 
 ```json
 {
-  "sections": [
-    {
-      "name": {"text": "Ores & Minerals", "color": "aqua", "bold": true},
-      "icon": "DIAMOND",
-      "items": [
-        {
-          "material": "DIAMOND",
-          "buyPrice": 3000,
-          "sellPrice": 1800,
-          "displayName": {"text": "Diamond", "color": "aqua", "bold": true}
-        },
-        {
-          "material": "EMERALD",
-          "buyPrice": 1000,
-          "sellPrice": 300,
-          "displayName": {"text": "Emerald", "color": "green"}
-        }
-      ]
-    }
-  ]
+  "startingBalance": 500,
+  "currency": "S$",
+  "listingFee": 2
 }
 ```
 
-Text components use Minecraft's official `ComponentSerialization.CODEC` format — the same format used by the game's Data Components system. This ensures full forward compatibility with future Minecraft updates.
+Supports:
+
+* Categories
+* Prices
+* Text formatting
+* Reload without restart
 
 ---
 
 ## Compatibility
 
-| Requirement | Value |
-|-------------|-------|
-| **Minecraft** | Java Edition 26.1.x |
-| **Mod Loader** | Fabric Loader >= 0.19.2 |
-| **Java** | 25 |
-| **Side** | Server-Side Only |
-| **Client** | Vanilla Minecraft (un-modded) |
-| **Database** | SQLite (WAL mode, async) |
-| **GUI** | Native ScreenHandler (no third-party libs) |
+| Component | Requirement |
+| --------- | ----------- |
+| Minecraft | 26.1.x      |
+| Loader    | Fabric      |
+| Java      | 25          |
+| Client    | Any         |
+| Database  | SQLite      |
+| Side      | Server      |
 
 ---
 
 ## FAQ
 
-**Does this require client mods?**
-No. Solidus is fully server-side. No client installation required — works with any Minecraft client, modded or vanilla.
+### Does this require client mods?
 
-**Works with Velocity / BungeeCord?**
-Yes, Solidus runs on the backend server. For proxy networks (BungeeCord, Velocity, Waterfall, or equivalent) with monetization, a Commercial License is required — see [LICENSE](LICENSE).
+No.
 
-**Supports offline mode?**
-Solidus uses UUID-based identification. In offline/cracked mode, UUIDs are generated from usernames — this works but is less secure against identity spoofing.
+Players join using standard Minecraft clients.
 
-**Can I change prices without restarting?**
-Yes. `shop.json` supports hot-reload. Edit the file and use `/shop reload` (or it auto-detects changes).
+---
 
-**What about economy exploits?**
-Solidus has multiple layers of protection: hardcoded anti-farm deflation, Single-Threaded Executor Queue for race conditions, packet rate limiting (150ms cooldown), ghost item prevention, and anti-negative value validation on all operations.
+### Works with proxy networks?
 
-**Does it work with economy plugins from other platforms?**
-No. Solidus is a standalone economy engine and does not integrate with Vault, Essentials, or other plugin-based economy systems.
+Yes.
+
+Solidus runs on backend servers.
+
+---
+
+### Supports offline mode?
+
+Yes, but online-mode servers are recommended.
+
+---
+
+### Can prices be changed live?
+
+Yes.
+
+Configuration supports hot reload.
+
+---
+
+### Does Solidus integrate with economy plugins?
+
+No.
+
+Solidus is intentionally standalone.
 
 ---
 
 ## Developer Notes
 
-<details>
-<summary>Click to expand — technical architecture for developers</summary>
+### Architecture
 
-### Concurrency: Single-Threaded Executor Queue
+Solidus separates:
 
-Solidus uses **Single-Threaded Executor Queues** instead of database-level locking. SQLite's `BEGIN IMMEDIATE` does not provide row-level locking — it locks the **entire database file** against writes. If one player buys from the auction while another uses `/pay`, a "database is locked" exception would occur.
+* Economy
+* Shop
+* Auction
+* Persistence
+* Networking
 
-Instead, all economy mutations and auction transactions are submitted to dedicated single-threaded executors:
+### Storage
 
-1. Operation submitted to executor queue
-2. Executor thread picks up the operation sequentially
-3. In-memory cache updated immediately (instant for subsequent reads)
-4. SQLite persistence happens asynchronously
-5. Result returned via CompletableFuture
+* SQLite
+* WAL mode
+* Async persistence
+* Memory cache
 
-This guarantees that two players cannot purchase the same auction listing simultaneously — the second buyer simply finds the listing already marked as sold.
+### Concurrency
 
-### SQLite Architecture
+Operations are serialized internally to reduce contention and preserve consistency.
 
-- **WAL mode** enabled for crash resilience and concurrent reads
-- **In-memory cache** for all balance reads — zero database queries on `/balance`
-- **Async persistence** — cache writes are flushed to disk asynchronously
-- **No `BEGIN IMMEDIATE`** — Executor Queue replaces database-level locking entirely
+### Text System
 
-### Text Parsing: ComponentSerialization.CODEC
+Uses Minecraft component serialization.
 
-Shop configuration text components are parsed using Minecraft's official `ComponentSerialization.CODEC` instead of custom GSON parsers. This provides:
+More details:
 
-- Full compatibility with Mojang's Data Components system
-- No breaking changes when Minecraft updates its text component format
-- Identical parsing behavior to vanilla Minecraft's own JSON text parsing
-
-### Ghost Item Prevention
-
-When a Mixin cancels a container click packet (to block item movement in virtual GUIs), the client does not immediately know about the cancellation due to network latency. This causes "ghost items" — items that appear to move on the client but never actually moved on the server.
-
-The fix is to call `player.currentScreenHandler.sendContentUpdates()` after every packet cancellation, forcing an immediate container resync from server to client.
-
-### Build System
-
-| Setting | Value |
-|---------|-------|
-| Loom Plugin | `net.fabricmc.fabric-loom` |
-| Dependency type | `implementation` (not `modImplementation`) |
-| Mappings | None (unobfuscated 26.1.x) |
-| Java target | `LanguageVersion.of(25)` |
-| Jar task | `jar` (not `remapJar`) |
-
-### Intermediary Names
-
-Without a mappings block, code in the IDE uses Intermediary names (e.g., `class_1703`) instead of official Mojang names. The Yarn mappings dependency resolves these at compile time. This is expected behavior for unobfuscated Minecraft 26.1.x environments.
-
-### Critical Rules
-
-1. **NEVER use legacy formatting characters** — causes client disconnects and thread crashes. Use `Component.literal().withStyle()` exclusively.
-2. **NEVER use `BEGIN IMMEDIATE` for concurrency** — SQLite does NOT support row-level locking. Use Executor Queues.
-3. **NEVER use third-party GUI libraries** — write native `ScreenHandler` extensions only.
-4. **ALWAYS call `sendContentUpdates()`** after canceling packets in Mixins.
-5. **Use `ComponentSerialization.CODEC`** for text component parsing from JSON.
-
-For full project structure and detailed architecture, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-</details>
+```text
+docs/ARCHITECTURE.md
+```
 
 ---
 
-## Building from Source
-
-Make sure you have **JDK 25** installed, then:
+## Building
 
 ```bash
-# Clone the repository
 git clone https://github.com/mohammad-salah-qasiaa/solidus.git
 cd solidus
-
-# Build the release jar
 ./gradlew build
 ```
 
-The compiled `.jar` will be at:
-```
-build/libs/solidus-1.0.0-beta.jar
+Output:
+
+```text
+build/libs/
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] **Transaction Taxes** — Configurable tax rate on shop purchases and auction sales
-- [ ] **Multi-Currency** — Support for multiple independent currency types
-- [ ] **REST API** — HTTP endpoint for external integrations (web dashboards, Discord bots)
-- [ ] **Redis Backend** — Optional Redis backend for multi-server economy sync
-- [ ] **Metrics & Economy Analytics** — Inflation tracking, transaction logs, and server health dashboards
-- [ ] **Backup & Recovery** — Automated economy snapshots with point-in-time restore
+* [ ] Transaction taxes
+* [ ] Multi-currency
+* [ ] REST API
+* [ ] Redis backend
+* [ ] Metrics & analytics
+* [ ] Backup & restore
+
+---
+
+## Contributing
+
+Contributions are welcome.
+
+* Report issues
+* Suggest features
+* Submit pull requests
 
 ---
 
 ## License
 
-This project is licensed under the **Solidus Community & Commercial License (SCCL) v1.0**.
+Licensed under:
 
-**Copyright (c) 2026 MOHD_Gs**
+**Solidus Community & Commercial License (SCCL) v1.0**
 
-| Use Case | Allowed? |
-|----------|----------|
-| Private / non-commercial servers | Free |
-| Study & modify source code | Free |
-| Fork & redistribute (open-source, same license) | Free |
-| Commercial servers (paid ranks, webshops, etc.) | Requires Commercial License |
-| Large-scale public servers | Requires Commercial License |
-| Proxy networks with monetization | Requires Commercial License |
-| Selling or relicensing as a paid product | Prohibited |
+| Usage               | Status           |
+| ------------------- | ---------------- |
+| Private servers     | Allowed          |
+| Study & modify      | Allowed          |
+| Open redistribution | Allowed          |
+| Commercial use      | License required |
 
-See [LICENSE](LICENSE) for full terms.
-
-**Commercial inquiries:** Contact MOHD_Gs
+See [LICENSE](LICENSE).
 
 ---
 
-<div align="center">
-Built with precision by <b>MOHD_Gs</b>
-</div>
+Built with ☕ by MOHD_Gs
