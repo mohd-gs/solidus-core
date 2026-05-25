@@ -1,5 +1,12 @@
 # Solidus
 
+
+
+
+
+
+\
+
 ### Server-side economy, shop, and auction system for Minecraft Fabric
 
 Stable economies · Vanilla compatibility · No client installation
@@ -103,7 +110,7 @@ Suggested media:
 
 | Platform        | Link        |
 | --------------- | ----------- |
-| GitHub Releases | [Releases](https://github.com/mohammad-salah-qasiaa/solidus/releases) |
+| GitHub Releases | Releases    |
 | Modrinth        | Coming soon |
 
 ---
@@ -149,9 +156,9 @@ Example:
 
 ```json
 {
-  "startingBalance": 500,
-  "currency": "S$",
-  "listingFee": 2
+  "startingBalance":500,
+  "currency":"S$",
+  "listingFee":2
 }
 ```
 
@@ -255,8 +262,10 @@ docs/ARCHITECTURE.md
 ## Building
 
 ```bash
-git clone https://github.com/mohammad-salah-qasiaa/solidus.git
+git clone <repository>
+
 cd solidus
+
 ./gradlew build
 ```
 
@@ -302,7 +311,7 @@ Licensed under:
 | Open redistribution | Allowed          |
 | Commercial use      | License required |
 
-See [LICENSE](LICENSE).
+See `LICENSE`.
 
 ---
 
