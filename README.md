@@ -3,9 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Fabric-blue.svg)](https://fabricmc.net/)
 [![Minecraft Version](https://img.shields.io/badge/Minecraft-26.1.x-green.svg)](https://www.minecraft.net/)
 
-
-
-### Server-side economy, shop, and auction system for Minecraft Fabric
+**Server-side economy, shop, and auction system for Minecraft Fabric**
 
 Stable economies · Vanilla compatibility · No client installation · Minecraft 26.1.x Ready
 
@@ -19,15 +17,13 @@ Create long-term survival economies without requiring client mods, resource pack
 
 ### Highlights
 
-* Fully server-side architecture
-* Works with vanilla and modded clients
-* Built-in virtual economy
-* GUI-based server shop
+* Fully server-side architecture — works with any vanilla client
+* Built-in virtual economy with async persistence
+* GUI-based server shop (11 categories, 120+ items)
 * Player-driven auction house
-* Anti-inflation economy balancing
-* Crash-resilient persistence
+* Hot-reload configuration — change prices without restart
 * Inter-mod API for third-party integration
-* Minimal operational overhead
+* Crash-resilient data storage
 
 ---
 
@@ -37,110 +33,43 @@ Create long-term survival economies without requiring client mods, resource pack
 
 A lightweight virtual economy designed for multiplayer survival servers.
 
-Features include:
-
-* Memory-backed balance reads
-* Async SQLite persistence
 * Configurable starting balance
 * Secure player transfers (`/pay`) — online and offline
 * Global wealth leaderboard (`/baltop`)
 * Full transaction history (`/transactions`)
 * Offline notifications on login
-* Consistency-focused execution model
-
----
 
 ### Server Shop (`/shop`)
 
 Virtual shop interface powered entirely by the server.
 
-Includes:
-
-* 11 categories
-* 120+ configured items
+* 11 categories with 120+ configured items
 * Stack trading support
 * Item search (`/shop search <query>`)
 * Hot-reload configuration
-* Display-only GUI protection
-
----
+* Display-only GUI protection (no item movement exploits)
 
 ### Auction House (`/ah`)
 
 Marketplace for player-to-player trading.
 
-Capabilities:
-
 * Item listing directly from inventory (`/ah sell <price>`)
-* Listing expiration with item return
+* Listing expiration with automatic item return
 * Reclaim expired items (`/ah collect`)
 * Cancel own listings (`/ah cancel <uuid>`)
 * Sort listings by price, newest, or material (`/ah sort`)
 * Listing fee support
-* Purchase protection
 * Offline seller notifications
-* Progression-focused balancing
-
----
 
 ### Economy Protection
 
-Solidus includes balancing mechanisms to reduce the economic impact of automated farms.
-
-Examples:
-
-| Resource             | Reduction             |
-| -------------------- | --------------------- |
-| Emerald              | 70%                   |
-| Gold                 | 50%                   |
-| Iron                 | 30%                   |
-| Trial rewards        | 50–70%                |
-| Additional materials | Configured internally |
-
----
-
-### Inter-Mod API
-
-Solidus exposes a stable public API (`com.solidus.api.SolidusAPI`) for other Fabric mods to integrate with the economy system. No compile-time dependency required — mods can access all balance operations via pure reflection.
-
-Available operations:
-
-| Method | Description |
-| ------ | ----------- |
-| `getBalance` | Get player balance (online or offline) |
-| `addBalance` | Add currency to a player |
-| `subtractBalance` | Subtract currency from a player |
-| `transfer` | Atomic player-to-player transfer |
-| `transferOffline` | Atomic transfer by UUID (no online requirement) |
-| `hasSufficientBalance` | Check if a player can afford an amount |
-| `getTopBalances` | Wealth leaderboard data |
-| `getTransactionLog` | Log custom transaction events |
-
-Integration example (zero compile dependency):
-
-```java
-// Check if Solidus is loaded
-if (FabricLoader.getInstance().isModLoaded("solidus")) {
-    Class<?> apiClass = Class.forName("com.solidus.api.SolidusAPI");
-    Object api = apiClass.getMethod("getInstance").invoke(null);
-    // Call any method via reflection
-}
-```
-
-See `docs/ARCHITECTURE.md` for the full API reference and integration guide.
+Solidus applies sell-price reductions to farmed resources, configured directly in `shop.json` by the server operator. This gives you full control over economic balance — adjust prices to counter inflation from automated farms without needing to restart the server.
 
 ---
 
 ## Screenshots
 
 > Screenshots and GIF previews coming soon.
-
-Suggested media:
-
-* Shop GUI
-* Auction interface
-* Leaderboards
-* Configuration examples
 
 ---
 
@@ -155,7 +84,7 @@ Suggested media:
 
 ## Installation
 
-> Requirements: Minecraft 26.1.x · Java 25 · Fabric Loader · Fabric API
+> **Requirements:** Minecraft 26.1.x · Java 25 · Fabric Loader · Fabric API
 
 1. Install [Fabric Loader](https://fabricmc.net/use/)
 2. Install [Fabric API](https://modrinth.com/mod/fabric-api) on the server
@@ -170,63 +99,59 @@ No client installation required.
 
 ## Commands
 
-| Command              | Description                  |
-| -------------------- | ---------------------------- |
-| `/balance`           | Show balance                 |
+| Command | Description |
+| --- | --- |
+| `/balance` | Show balance |
 | `/pay <player> <amount>` | Transfer to online player |
 | `/pay offline <name> <amount>` | Transfer to offline player |
-| `/baltop`            | Wealth leaderboard           |
-| `/shop`              | Open shop                    |
-| `/shop search <query>` | Search shop items          |
-| `/ah`                | Open auction                 |
-| `/ah sell <price>`   | Create listing               |
-| `/ah collect`        | Reclaim expired items        |
-| `/ah cancel <uuid>`  | Cancel own listing           |
-| `/ah sort <order>`   | Sort listings                |
-| `/transactions [page]` | Transaction history        |
+| `/baltop` | Wealth leaderboard |
+| `/shop` | Open shop |
+| `/shop search <query>` | Search shop items |
+| `/ah` | Open auction |
+| `/ah sell <price>` | Create listing |
+| `/ah collect` | Reclaim expired items |
+| `/ah cancel <uuid>` | Cancel own listing |
+| `/ah sort <order>` | Sort listings |
+| `/transactions [page]` | Transaction history |
 
 ---
 
 ## Configuration
 
-Solidus generates configuration automatically.
+Solidus generates configuration automatically on first run.
 
-Location:
+**Location:** `config/solidus/shop.json`
 
-```text
-config/solidus/shop.json
-```
-
-Example:
+**Example:**
 
 ```json
 {
-  "startingBalance":500,
-  "currency":"S$",
-  "listingFee":2
+  "startingBalance": 500,
+  "currency": "S$",
+  "listingFee": 2
 }
 ```
 
 Supports:
 
-* Categories
-* Prices
+* Categories and per-item pricing
+* Buy and sell prices per material
 * Text formatting
-* Reload without restart
+* Hot reload without restart
 
 ---
 
 ## Compatibility
 
-| Component | Requirement    |
-| --------- | -------------- |
-| Minecraft | 26.1.x         |
-| Loader    | Fabric         |
-| Fabric API | Required      |
-| Java      | 25             |
-| Client    | Any            |
-| Database  | SQLite         |
-| Side      | Server         |
+| Component | Requirement |
+| --- | --- |
+| Minecraft | 26.1.x |
+| Loader | Fabric |
+| Fabric API | Required |
+| Java | 25 |
+| Client | Any (vanilla or modded) |
+| Database | SQLite (bundled) |
+| Side | Server only |
 
 ---
 
@@ -234,111 +159,23 @@ Supports:
 
 ### Does this require client mods?
 
-No.
-
-Players join using standard Minecraft clients.
-
----
+No. Players join using standard Minecraft clients.
 
 ### Works with proxy networks?
 
-Yes.
-
-Solidus runs on backend servers.
-
----
+Yes. Solidus runs on backend servers.
 
 ### Supports offline mode?
 
 Yes, but online-mode servers are recommended.
 
----
-
 ### Can prices be changed live?
 
-Yes.
-
-Configuration supports hot reload.
-
----
+Yes. Configuration supports hot reload — edit `shop.json` and reload without restart.
 
 ### Does Solidus integrate with other mods?
 
-Yes.
-
-Solidus provides a stable public API (`SolidusAPI`) that other Fabric mods can use to read balances, transfer currency, and log transactions. Integration works via reflection with zero compile-time dependency — the other mod does not need Solidus in its build path.
-
-If Solidus is not installed, the integrating mod simply skips the API calls and continues working normally.
-
----
-
-## Developer Notes
-
-### Architecture
-
-Solidus separates:
-
-* Economy
-* Shop
-* Auction
-* Persistence
-* Networking
-* Public API
-
-### Storage
-
-* SQLite
-* WAL mode
-* Async persistence
-* Memory cache
-
-### Concurrency
-
-Operations are serialized internally to reduce contention and preserve consistency.
-
-### Text System
-
-Uses Minecraft component serialization.
-
-More details:
-
-```text
-docs/ARCHITECTURE.md
-```
-
----
-
-## Building
-
-> **Minecraft 26.1.x Migration**: This project uses **Mojang Official Mappings** (Yarn is retired). Requires **Java 25**, **Gradle 9.4+**, and **Fabric Loom 1.16+**.
-
-```bash
-git clone <repository>
-
-cd solidus
-
-./gradlew build
-```
-
-Output:
-
-```text
-build/libs/
-```
-
-### Migration from pre-26.1
-
-If upgrading from Minecraft 1.21.x (Yarn mappings):
-
-| Change | Before (1.21.x) | After (26.1.x) |
-| ------ | ---------------- | --------------- |
-| Loom plugin | `fabric-loom` | `net.fabricmc.fabric-loom` |
-| Mappings | `net.fabricmc:yarn:...` | **Removed** (unobfuscated) |
-| Dependencies | `modImplementation` | `implementation` |
-| Build task | `remapJar` | `jar` |
-| MC version | `1.21.7` | `26.1.2` |
-| Fabric API | `0.127.0+1.21.7` | `0.149.1+26.1.2` |
-| Java | 25 | 25 |
+Yes. Solidus provides a stable public API (`SolidusAPI`) for other Fabric mods. Integration works via reflection with zero compile-time dependency. See [DEVELOPMENT.md](DEVELOPMENT.md) for details.
 
 ---
 
@@ -361,20 +198,20 @@ Contributions are welcome.
 * Suggest features
 * Submit pull requests
 
+See [DEVELOPMENT.md](DEVELOPMENT.md) for technical details and contribution guidelines.
+
 ---
 
 ## License
 
-Licensed under:
-
 **Solidus Community & Commercial License (SCCL) v1.0**
 
-| Usage               | Status           |
-| ------------------- | ---------------- |
-| Private servers     | Allowed          |
-| Study & modify      | Allowed          |
-| Open redistribution | Allowed          |
-| Commercial use      | License required |
+| Usage | Status |
+| --- | --- |
+| Private servers | Allowed |
+| Study & modify | Allowed |
+| Open redistribution | Allowed |
+| Commercial use | License required |
 
 See `LICENSE`.
 

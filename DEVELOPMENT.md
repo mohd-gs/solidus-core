@@ -1,6 +1,23 @@
-# Solidus Architecture
+# Solidus — Developer Guide
 
-Technical architecture, project structure, and design decisions for Solidus — the server-side Economy & Commerce Engine for Minecraft Fabric.
+Technical reference for developers building, contributing to, or integrating with Solidus.
+
+For user-facing documentation, see [README.md](README.md). For full architecture details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+---
+
+## Architecture Overview
+
+Solidus separates concerns into six layers:
+
+| Layer | Components |
+| --- | --- |
+| **Public API** | `SolidusAPI`, `SolidusIntegration` |
+| **Commands** | `BalanceCommand`, `PayCommand`, `BaltopCommand`, `ShopCommand`, `AuctionCommand`, `TransactionsCommand` |
+| **Business Logic** | `EconomyEngine`, `BalanceManager`, `ShopManager`, `AuctionManager`, `TransactionLog` |
+| **Presentation** | `ShopGUI`, `ShopScreenHandler`, `AuctionGUI`, `AuctionScreenHandler`, `ShopDummyContainer`, `AuctionDummyContainer` |
+| **Infrastructure** | `SQLiteStorage`, `PacketHandler`, `RateLimiter`, `ConfigManager`, `TextUtil`, `CurrencyUtil` |
+| **Mixins** | `ServerPlayerEntityMixin`, `ScreenHandlerMixin` |
 
 ---
 
@@ -55,43 +72,7 @@ solidus/
 │   ├── shop.json                        # 120+ items, 11 sections
 │   └── pack.mcmeta
 └── docs/
-    └── ARCHITECTURE.md                  # This file
-```
-
----
-
-## System Architecture
-
-### Layer Overview
-
-```
-┌─────────────────────────────────────────────┐
-│             Public API (Stable)             │
-│  SolidusAPI · SolidusIntegration            │
-├─────────────────────────────────────────────┤
-│                 Commands                     │
-│  BalanceCommand · PayCommand · BaltopCommand │
-│  ShopCommand · AuctionCommand                │
-│  TransactionsCommand                        │
-├─────────────────────────────────────────────┤
-│              Business Logic                  │
-│  EconomyEngine · BalanceManager              │
-│  ShopManager · AuctionManager                │
-│  TransactionLog                              │
-├─────────────────────────────────────────────┤
-│              Presentation                    │
-│  ShopGUI · ShopScreenHandler                │
-│  AuctionGUI · AuctionScreenHandler           │
-│  ShopDummyContainer · AuctionDummyContainer  │
-├─────────────────────────────────────────────┤
-│              Infrastructure                  │
-│  SQLiteStorage · PacketHandler               │
-│  RateLimiter · ConfigManager                 │
-│  TextUtil · CurrencyUtil                     │
-├─────────────────────────────────────────────┤
-│              Mixins                          │
-│  ServerPlayerEntityMixin · ScreenHandlerMixin│
-└─────────────────────────────────────────────┘
+    └── ARCHITECTURE.md                  # Full architecture reference
 ```
 
 ---
@@ -154,14 +135,6 @@ Both mixins call `sendContentUpdates()` after every cancellation to prevent ghos
 
 ---
 
-## Economy Balancing
-
-Sell prices for farmed resources are configured directly in `shop.json` by the server operator. This approach gives operators full control over economic balance — they can adjust individual item prices to counter inflation from automated farms without needing code changes or server restarts.
-
-**How it works:** Prices are defined per-item in the `sellPrice` field within `shop.json`. To reduce the profitability of farmed resources, operators simply set lower sell prices for those items. Changes take effect immediately with hot-reload support.
-
----
-
 ## Inter-Mod API
 
 Solidus provides a **stable public API** in `com.solidus.api.SolidusAPI` for other mods to integrate with the economy system. This is the **only** class external mods should depend on — internal classes may change between versions without notice.
@@ -169,7 +142,7 @@ Solidus provides a **stable public API** in `com.solidus.api.SolidusAPI` for oth
 ### API Methods
 
 | Method | Return Type | Description |
-|--------|-------------|-------------|
+| --- | --- | --- |
 | `getInstance()` | `SolidusAPI` | Get API singleton (null if not loaded) |
 | `isAvailable()` | `boolean` | Check if Solidus is ready |
 | `getBalance(ServerPlayer)` | `CompletableFuture<Double>` | Get online player's balance |
@@ -205,7 +178,7 @@ CompletableFuture<Double> balance = (CompletableFuture<Double>) getBalance.invok
 
 ### CombatKeepMod Integration Example
 
-`SolidusIntegration.java` provides a reference implementation for the CombatKeepMod integration. On combat death, it deducts a percentage of the victim's balance and gives it to the killer:
+`SolidusIntegration.java` provides a reference implementation. On combat death, it deducts a percentage of the victim's balance and gives it to the killer:
 
 ```java
 // In CombatKeepMod's death callback:
@@ -214,10 +187,10 @@ SolidusIntegration.applyDeathPenalty(victim, killer, 0.15);
 
 The integration uses `DEATH_PENALTY` and `DEATH_REWARD` transaction types, which appear in the player's `/transactions` history.
 
-### Transaction Types for External Mods
+### Transaction Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `DEATH_PENALTY` | Player lost currency from being killed |
 | `DEATH_REWARD` | Player gained currency from killing another player |
 | `SHOP_BUY` | Player purchased from the server shop |
@@ -231,10 +204,22 @@ External mods can log custom transactions via `getTransactionLog().log(...)` so 
 
 ---
 
-## Build System
+## Building
+
+> **Minecraft 26.1.x Migration**: This project uses **Mojang Official Mappings** (Yarn is retired). Requires **Java 25**, **Gradle 9.4+**, and **Fabric Loom 1.16+**.
+
+```bash
+git clone <repository>
+cd solidus
+./gradlew build
+```
+
+Output: `build/libs/`
+
+### Build Configuration
 
 | Setting | Value | Notes |
-|---------|-------|-------|
+| --- | --- | --- |
 | Loom Plugin | `net.fabricmc.fabric-loom` | New plugin ID for Fabric Loom 1.16+ |
 | Dependency type | `implementation` | Not `modImplementation` (unobfuscated) |
 | Mappings | None | Unobfuscated Minecraft 26.1.x |
@@ -244,6 +229,20 @@ External mods can log custom transactions via `getTransactionLog().log(...)` so 
 ### Intermediary Names
 
 Without a mappings block, code in the IDE uses Intermediary names (e.g., `class_1703`) instead of official Mojang names. The Yarn mappings dependency resolves these at compile time. This is expected behavior for unobfuscated Minecraft 26.1.x environments.
+
+### Migration from pre-26.1
+
+If upgrading from Minecraft 1.21.x (Yarn mappings):
+
+| Change | Before (1.21.x) | After (26.1.x) |
+| --- | --- | --- |
+| Loom plugin | `fabric-loom` | `net.fabricmc.fabric-loom` |
+| Mappings | `net.fabricmc:yarn:...` | **Removed** (unobfuscated) |
+| Dependencies | `modImplementation` | `implementation` |
+| Build task | `remapJar` | `jar` |
+| MC version | `1.21.7` | `26.1.2` |
+| Fabric API | `0.127.0+1.21.7` | `0.149.1+26.1.2` |
+| Java | 25 | 25 |
 
 ---
 
@@ -256,3 +255,57 @@ Without a mappings block, code in the IDE uses Intermediary names (e.g., `class_
 5. **Use `ComponentSerialization.CODEC`** for text component parsing from JSON — not custom GSON parsers.
 6. **NEVER use `modImplementation`** for non-Fabric dependencies — use standard `implementation`.
 7. **Java 25 strict enforcement** — the project targets `LanguageVersion.of(25)`.
+
+---
+
+## Text System
+
+All player-facing text uses Minecraft's component serialization system. The `TextUtil` class provides a centralized factory for building styled components.
+
+Key principles:
+
+- **No legacy formatting codes** — `§` characters are forbidden and will crash the client
+- **Use `Component.literal().withStyle()`** — the only approved method for styled text
+- **Use `ComponentSerialization.CODEC`** — for parsing JSON text components from configuration
+
+---
+
+## Storage
+
+| Aspect | Implementation |
+| --- | --- |
+| Database | SQLite (bundled, no external setup) |
+| Journal mode | WAL (Write-Ahead Logging) |
+| Read path | In-memory `ConcurrentHashMap` cache |
+| Write path | Async via `ExecutorService` queue |
+| Consistency | Sequential execution, no database-level locking needed |
+
+---
+
+## Contributing
+
+Contributions are welcome. Please follow these steps:
+
+1. **Fork** the repository
+2. **Create a feature branch** from `main`
+3. **Follow the critical rules** listed above
+4. **Test thoroughly** on a dedicated server before submitting
+5. **Submit a pull request** with a clear description of changes
+
+### Areas of Interest
+
+* Transaction tax system
+* Multi-currency support
+* REST API for external tools
+* Redis backend for scaled deployments
+* Metrics and analytics integration
+* Backup and restore utilities
+
+---
+
+## Additional Resources
+
+| Resource | Description |
+| --- | --- |
+| [README.md](README.md) | User-facing documentation |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full architecture reference and design decisions |
