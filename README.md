@@ -175,7 +175,7 @@ Yes. Configuration supports hot reload — edit `shop.json` and reload without r
 
 ### Does Solidus integrate with other mods?
 
-Yes. Solidus provides a stable public API (`SolidusAPI`) for other Fabric mods. Integration works via reflection with zero compile-time dependency. See [DEVELOPMENT.md](DEVELOPMENT.md) for details.
+Yes. Solidus provides a stable public API (`SolidusAPI`) for other Fabric mods. Integration works via reflection with zero compile-time dependency. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for full API reference.
 
 ---
 
@@ -198,7 +198,7 @@ Contributions are welcome.
 * Suggest features
 * Submit pull requests
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for technical details and contribution guidelines.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details, API reference, and contribution guidelines.
 
 ---
 
