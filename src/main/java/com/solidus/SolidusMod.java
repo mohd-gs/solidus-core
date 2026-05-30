@@ -4,6 +4,7 @@ import com.solidus.api.SolidusAPI;
 import com.solidus.commands.BalanceCommand;
 import com.solidus.commands.BaltopCommand;
 import com.solidus.commands.PayCommand;
+import com.solidus.commands.SellCommand;
 import com.solidus.commands.ShopCommand;
 import com.solidus.commands.AuctionCommand;
 import com.solidus.commands.TransactionsCommand;
@@ -74,6 +75,7 @@ public class SolidusMod implements DedicatedServerModInitializer {
             PayCommand.register(dispatcher, economyEngine);
             BaltopCommand.register(dispatcher, balanceManager);
             ShopCommand.register(dispatcher, shopManager);
+            SellCommand.register(dispatcher, shopManager);
             AuctionCommand.register(dispatcher, auctionManager);
             TransactionsCommand.register(dispatcher, economyEngine);
         });

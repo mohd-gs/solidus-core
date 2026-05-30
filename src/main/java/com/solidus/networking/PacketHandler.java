@@ -2,6 +2,7 @@ package com.solidus.networking;
 
 import com.solidus.SolidusMod;
 import com.solidus.shop.ShopScreenHandler;
+import com.solidus.sell.SellScreenHandler;
 import com.solidus.auction.AuctionScreenHandler;
 
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -96,6 +97,13 @@ public class PacketHandler {
             return true;
         }
 
+        if (currentMenu instanceof SellScreenHandler sellHandler) {
+            // Route to sell click handler - all clicks are handled manually
+            // because the sell GUI allows item placement
+            sellHandler.clicked(slotIndex, button, clickType, player);
+            return true;
+        }
+
         if (currentMenu instanceof AuctionScreenHandler auctionHandler) {
             // Route to auction click handler
             auctionHandler.clicked(slotIndex, button, clickType, player);
@@ -114,6 +122,8 @@ public class PacketHandler {
      */
     public boolean hasSolidusScreenOpen(ServerPlayer player) {
         AbstractContainerMenu currentMenu = player.containerMenu;
-        return currentMenu instanceof ShopScreenHandler || currentMenu instanceof AuctionScreenHandler;
+        return currentMenu instanceof ShopScreenHandler
+            || currentMenu instanceof SellScreenHandler
+            || currentMenu instanceof AuctionScreenHandler;
     }
 }

@@ -351,7 +351,11 @@ public class ShopManager {
 
     // ── Helpers ───────────────────────────────────────────
 
-    private ShopItem findItem(String material) {
+    /**
+     * Public accessor for finding an item by material name.
+     * Used by the sell system to look up sell prices.
+     */
+    public ShopItem findItem(String material) {
         for (ShopSection section : sections.values()) {
             for (ShopItem item : section.items) {
                 if (item.material().equalsIgnoreCase(material)) {
@@ -410,6 +414,59 @@ public class ShopManager {
                 stack.shrink(toRemove);
                 remaining -= toRemove;
             }
+        }
+    }
+
+    /**
+     * Processes earnings from a bulk sell operation (sell all / sell GUI).
+     * Adds the total earnings to the player's balance and logs the transaction.
+     *
+     * @param player        The selling player
+     * @param totalEarnings The total amount earned from selling
+     * @param totalItemsSold The total number of items sold
+     */
+    public void processSellAllEarnings(ServerPlayer player, double totalEarnings, int totalItemsSold) {
+        BalanceManager balanceManager = economyEngine.getBalanceManager();
+
+        balanceManager.addBalance(player, totalEarnings).thenAccept(newBalance -> {
+            player.server.execute(() -> {
+                if (newBalance < 0) {
+                    SolidusMod.LOGGER.error("CRITICAL: Sell-all balance add failed for {}! Items lost. Amount: {}",
+                        player.getName().getString(), totalEarnings);
+                    player.sendSystemMessage(TextUtil.error("Transaction error. Please contact an admin."));
+                    return;
+                }
+
+                // Log transaction
+                economyEngine.getTransactionLog().log(
+                    TransactionLog.Type.SHOP_SELL,
+                    player.getUUID(), player.getName().getString(),
+                    null, null,
+                    totalEarnings, "VARIOUS", totalItemsSold,
+                    "Sold " + totalItemsSold + " items via /sell all for " + CurrencyUtil.format(totalEarnings)
+                );
+
+                // Success notification
+                player.sendSystemMessage(
+                    TextUtil.success("Sold " + totalItemsSold + " item(s) for ")
+                        .append(TextUtil.currency(CurrencyUtil.format(totalEarnings)))
+                        .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                        .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
+                );
+            });
+        });
+    }
+
+    /**
+     * Public accessor for extracting the material name from an ItemStack.
+     * Used by the sell system for item identification.
+     */
+    public static String getMaterialNameStatic(net.minecraft.world.item.ItemStack stack) {
+        try {
+            return net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .getKey(stack.getItem()).getPath().toUpperCase();
+        } catch (Exception e) {
+            return stack.getItem().toString().toUpperCase();
         }
     }
 

@@ -3,6 +3,7 @@ package com.solidus.mixin;
 import com.solidus.SolidusMod;
 import com.solidus.networking.PacketHandler;
 import com.solidus.shop.ShopScreenHandler;
+import com.solidus.sell.SellScreenHandler;
 import com.solidus.auction.AuctionScreenHandler;
 
 import net.minecraft.server.level.ServerPlayer;
@@ -29,6 +30,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * This mixin adds a final safety layer by ensuring that clicks on virtual
  * GUI containers are never processed by the default AbstractContainerMenu logic.
  *
+ * IMPORTANT: SellScreenHandler is EXCLUDED from this safety net because it
+ * implements its own cursor-based item movement in its clicked() override.
+ * The sell GUI allows item placement, so its clicks must not be cancelled.
+ * The SellScreenHandler.clicked() method does NOT call super.clicked(),
+ * so this mixin's injection into AbstractContainerMenu.clicked() would not
+ * fire for SellScreenHandler anyway. However, the check is explicit for clarity.
+ *
  * Ghost Item Prevention:
  * If for any reason a click reaches this mixin and would result in item
  * movement in a Solidus virtual GUI, we cancel it AND force a container
@@ -52,8 +60,15 @@ public abstract class ScreenHandlerMixin {
             AbstractContainerMenu currentMenu = serverPlayer.containerMenu;
             if (currentMenu instanceof ShopScreenHandler || currentMenu instanceof AuctionScreenHandler) {
                 // Cancel any default AbstractContainerMenu.clicked() processing
-                // for Solidus virtual GUIs. Our custom ScreenHandler overrides
+                // for Shop and Auction GUIs. Our custom ScreenHandler overrides
                 // will handle the click through their own implementation.
+                //
+                // NOTE: SellScreenHandler is intentionally EXCLUDED here.
+                // The sell GUI needs its own cursor-based item movement,
+                // which is implemented in SellScreenHandler.clicked().
+                // Since SellScreenHandler.clicked() does not call super.clicked(),
+                // this mixin injection would not fire for it anyway, but we
+                // explicitly exclude it for architectural clarity.
                 ci.cancel();
 
                 // FORCE RESYNC: Prevent ghost items by ensuring the client
