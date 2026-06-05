@@ -9,7 +9,7 @@
     "homepage": "https://modrinth.com/user/MOHD_Gs",
     "sources": "https://github.com/mohd-gs/solidus-core"
   },
-  "license": "All Rights Reserved",
+  "license": "MIT",
   "environment": "server",
   "entrypoints": {
     "server": [

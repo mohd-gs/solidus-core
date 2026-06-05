@@ -105,7 +105,10 @@ public class TransactionLog {
             for (Type t : values()) {
                 if (t.code.equals(code)) return t;
             }
-            return PAY_SEND; // safe fallback
+            // Unknown transaction type — log a warning instead of silently
+            // falling back to PAY_SEND which would corrupt transaction semantics
+            SolidusMod.LOGGER.warn("Unknown transaction type code: '{}'. Defaulting to SHOP_BUY.", code);
+            return SHOP_BUY; // safe fallback — SHOP_BUY is the most generic type
         }
     }
 

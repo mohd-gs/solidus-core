@@ -305,12 +305,7 @@ public class SellCommand {
      * material matching.
      */
     private static String getMaterialName(ItemStack stack) {
-        try {
-            return net.minecraft.core.registries.BuiltInRegistries.ITEM
-                .getKey(stack.getItem()).getPath().toUpperCase();
-        } catch (Exception e) {
-            return stack.getItem().toString().toUpperCase();
-        }
+        return TextUtil.getMaterialName(stack);
     }
 
     /**

@@ -19,6 +19,7 @@ import com.solidus.networking.RateLimiter;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
 import net.minecraft.server.MinecraftServer;
@@ -48,6 +49,10 @@ public class SolidusMod implements DedicatedServerModInitializer {
     private static AuctionManager auctionManager;
     private static PacketHandler packetHandler;
     private static RateLimiter rateLimiter;
+
+    /** Tick counter for periodic tasks (auction expiration check every 5 minutes) */
+    private static int tickCounter = 0;
+    private static final int AUCTION_EXPIRY_CHECK_INTERVAL = 6000; // 5 minutes (6000 ticks)
 
     @Override
     public void onInitializeServer() {
@@ -98,6 +103,15 @@ public class SolidusMod implements DedicatedServerModInitializer {
             SolidusAPI.initialize(economyEngine);
 
             LOGGER.info("Solidus: MinecraftServer instance injected into AuctionManager.");
+        });
+
+        // Register periodic tick handler for auction expiration checks
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            tickCounter++;
+            if (tickCounter >= AUCTION_EXPIRY_CHECK_INTERVAL) {
+                tickCounter = 0;
+                auctionManager.processExpiredListings();
+            }
         });
 
         // Deliver pending offline notifications when a player joins

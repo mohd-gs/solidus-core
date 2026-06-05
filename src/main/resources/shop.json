@@ -1,7 +1,7 @@
 {
   "sections": {
     "building_blocks": {
-      "display_name": { "text": "🪨 بلوكات البناء / Building Blocks", "color": "dark_green", "bold": true },
+      "display_name": { "text": "Building Blocks", "color": "gold", "bold": true },
       "icon": "COBBLESTONE",
       "items": {
         "1":  { "material": "COBBLESTONE",     "buy-price": 2,    "sell-price": 0.5 },
@@ -31,7 +31,7 @@
       }
     },
     "ores_and_minerals": {
-      "display_name": { "text": "⛏️ معادن وخامات / Ores & Minerals", "color": "gold", "bold": true },
+      "display_name": { "text": "Ores & Minerals", "color": "gold", "bold": true },
       "icon": "DIAMOND",
       "items": {
         "1":  { "material": "COAL",              "buy-price": 5,     "sell-price": 2 },
@@ -56,7 +56,7 @@
       }
     },
     "food": {
-      "display_name": { "text": "🍎 طعام / Food", "color": "red", "bold": true },
+      "display_name": { "text": "Food", "color": "gold", "bold": true },
       "icon": "COOKED_BEEF",
       "items": {
         "1":  { "material": "BREAD",            "buy-price": 10,   "sell-price": 3 },
@@ -78,7 +78,7 @@
       }
     },
     "farming": {
-      "display_name": { "text": "🌾 زراعة / Farming", "color": "green", "bold": true },
+      "display_name": { "text": "Farming", "color": "gold", "bold": true },
       "icon": "WHEAT",
       "items": {
         "1":  { "material": "WHEAT_SEEDS",     "buy-price": 2,    "sell-price": 0.5 },
@@ -96,7 +96,7 @@
       }
     },
     "mob_drops_and_combat": {
-      "display_name": { "text": "💀 غنائم وقتال / Mob Drops & Combat", "color": "dark_red", "bold": true },
+      "display_name": { "text": "Mob Drops & Combat", "color": "gold", "bold": true },
       "icon": "DIAMOND_SWORD",
       "items": {
         "1":  { "material": "BONE",                     "buy-price": 4,      "sell-price": 1.5 },
@@ -110,7 +110,7 @@
         "9":  { "material": "ENDER_PEARL",              "buy-price": 30,     "sell-price": 12 },
         "10": { "material": "BLAZE_ROD",                "buy-price": 40,     "sell-price": 15 },
         "11": { "material": "BLAZE_POWDER",             "buy-price": 20,     "sell-price": 8 },
-        "12": { "material": "GHAST_TEAR",               "buy-price": 8,      "sell-price": 30 },
+        "12": { "material": "GHAST_TEAR",               "buy-price": 100,    "sell-price": 35 },
         "13": { "material": "MAGMA_CREAM",              "buy-price": 15,     "sell-price": 6 },
         "14": { "material": "SLIME_BALL",               "buy-price": 12,     "sell-price": 5 },
         "15": { "material": "PHANTOM_MEMBRANE",          "buy-price": 50,     "sell-price": 20 },
@@ -132,7 +132,7 @@
       }
     },
     "trial_challenges": {
-      "display_name": { "text": "🔑 مفاتيح وزجاجات التحدي / Trial Challenges", "color": "yellow", "bold": true },
+      "display_name": { "text": "Trial Challenges", "color": "gold", "bold": true },
       "icon": "TRIAL_KEY",
       "items": {
         "1": { "material": "TRIAL_KEY",          "buy-price": 750,   "sell-price": 45 },
@@ -141,7 +141,7 @@
       }
     },
     "tools_and_armor": {
-      "display_name": { "text": "🛡️ أدوات ودروع / Tools & Armor", "color": "aqua", "bold": true },
+      "display_name": { "text": "Tools & Armor", "color": "gold", "bold": true },
       "icon": "DIAMOND_CHESTPLATE",
       "items": {
         "1":  { "material": "WOODEN_PICKAXE",      "buy-price": 20,   "sell-price": 5 },
@@ -175,7 +175,7 @@
       }
     },
     "potions_and_enchanting": {
-      "display_name": { "text": "🧪 تطوير وجرعات / Enchanting & Potions", "color": "light_purple", "bold": true },
+      "display_name": { "text": "Enchanting & Potions", "color": "gold", "bold": true },
       "icon": "ENCHANTING_TABLE",
       "items": {
         "1": { "material": "POTION",              "buy-price": 50,   "sell-price": 15 },
@@ -190,7 +190,7 @@
       }
     },
     "redstone": {
-      "display_name": { "text": "⚡ ريدستون / Redstone", "color": "yellow", "bold": true },
+      "display_name": { "text": "Redstone", "color": "gold", "bold": true },
       "icon": "REDSTONE",
       "items": {
         "1":  { "material": "PISTON",                  "buy-price": 30,   "sell-price": 10 },
@@ -209,7 +209,7 @@
       }
     },
     "decoration": {
-      "display_name": { "text": "🎨 ديكور / Decoration", "color": "dark_purple", "bold": true },
+      "display_name": { "text": "Decoration", "color": "gold", "bold": true },
       "icon": "PAINTING",
       "items": {
         "1":  { "material": "TORCH",          "buy-price": 2,    "sell-price": 0.5 },
@@ -227,7 +227,7 @@
       }
     },
     "misc_and_ocean": {
-      "display_name": { "text": "🎒 متفرقات وأعماق المحيطات / Misc & Ocean", "color": "dark_aqua", "bold": true },
+      "display_name": { "text": "Misc & Ocean", "color": "gold", "bold": true },
       "icon": "TRIDENT",
       "items": {
         "1":  { "material": "CHEST",               "buy-price": 15,   "sell-price": 5 },

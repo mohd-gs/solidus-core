@@ -23,6 +23,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -53,6 +55,10 @@ public class ShopManager {
     // ConcurrentHashMap for thread-safe access from server tick and reload commands
     private final Map<String, ShopSection> sections = new ConcurrentHashMap<>();
     private volatile boolean loaded = false;
+
+    // Tracks players with a pending sell transaction to prevent double-sell race condition.
+    // When processSell starts, the player UUID is added; it is removed when the async chain completes.
+    private final Set<UUID> pendingSells = ConcurrentHashMap.newKeySet();
 
     public ShopManager(EconomyEngine economyEngine) {
         this.economyEngine = economyEngine;
@@ -281,16 +287,16 @@ public class ShopManager {
      * Transaction Flow (fully async — no server thread blocking):
      * 1. Validate the item exists and has a valid sell price
      * 2. Verify the player has the item in their inventory
-     * 3. Remove the item from the player's inventory
-     * 4. Atomically add the sell price to the player's balance (async chain)
+     * 3. Atomically add the sell price to the player's balance (async chain)
+     * 4. Remove the item from the player's inventory ONLY after balance succeeds
      *
      * No .join() is used — the balance add operation is chained with
      * .thenAccept() and server-thread callbacks via player.getServer().execute(),
      * preventing any server tick thread blocking.
      *
-     * IMPORTANT: Items are removed from inventory BEFORE the async balance
-     * add completes. If the balance add fails, items are already gone and
-     * cannot be restored. This is logged as CRITICAL for admin investigation.
+     * FIX: Balance is added BEFORE removing items to prevent item loss
+     * if the balance operation fails. Items are only removed after confirming
+     * the balance was successfully credited.
      *
      * @param player     The selling player
      * @param material   The Minecraft material name
@@ -303,48 +309,62 @@ public class ShopManager {
             return;
         }
 
+        // Prevent double-sell race condition: reject if this player already has a pending sell
+        UUID playerId = player.getUUID();
+        if (!pendingSells.add(playerId)) {
+            player.sendSystemMessage(TextUtil.error("A sell transaction is already in progress. Please wait."));
+            return;
+        }
+
         // Check if player has the item
         if (!hasItemInInventory(player, material, quantity)) {
+            pendingSells.remove(playerId);
             player.sendSystemMessage(TextUtil.error("You don't have " + quantity + "x " + material + " in your inventory."));
             return;
         }
 
-        // Remove items from inventory (must happen synchronously on server thread
-        // to prevent double-sell race — the player is interacting with the GUI)
-        removeItemFromInventory(player, material, quantity);
-
         // Calculate sell price
         double totalValue = CurrencyUtil.round(item.sellPrice() * quantity);
 
-        // Add balance asynchronously — no .join(), no server thread blocking
+        // Add balance FIRST — if this fails, items are NOT removed (prevents item loss)
+        // FIX: Previously items were removed before balance add, causing item loss on failure
         BalanceManager balanceManager = economyEngine.getBalanceManager();
         balanceManager.addBalance(player, totalValue).thenAccept(newBalance -> {
             player.getServer().execute(() -> {
-                if (newBalance < 0) {
-                    // CRITICAL: Balance add failed after item removal - item is lost
-                    SolidusMod.LOGGER.error("CRITICAL: Sell balance add failed for {}! Item lost: {}x{}",
-                        player.getName().getString(), quantity, material);
-                    player.sendSystemMessage(TextUtil.error("Transaction error. Please contact an admin."));
-                    return;
+                try {
+                    if (newBalance < 0) {
+                        // Balance add failed — items remain in inventory, no data loss
+                        SolidusMod.LOGGER.error("Sell balance add failed for {}! Items not removed.",
+                            player.getName().getString());
+                        player.sendSystemMessage(TextUtil.error("Transaction error. Your items are safe. Please try again."));
+                        return;
+                    }
+
+                    // Balance added successfully — now safe to remove items
+                    // (must happen synchronously on server thread to prevent double-sell)
+                    removeItemFromInventory(player, material, quantity);
+
+                    // Success notification
+                    Component message = TextUtil.success("Sold " + quantity + "x " + material + " for ")
+                        .append(TextUtil.currency(CurrencyUtil.format(totalValue)));
+
+                    // Log transaction
+                    economyEngine.getTransactionLog().log(
+                        TransactionLog.Type.SHOP_SELL,
+                        player.getUUID(), player.getName().getString(),
+                        null, null,
+                        totalValue, material, quantity,
+                        "Sold " + quantity + "x " + material + " to shop"
+                    );
+
+                    player.sendSystemMessage(message.append(
+                        TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                        .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
+                    );
+                } finally {
+                    // Always release the lock so the player can sell again
+                    pendingSells.remove(playerId);
                 }
-
-                // Success notification
-                Component message = TextUtil.success("Sold " + quantity + "x " + material + " for ")
-                    .append(TextUtil.currency(CurrencyUtil.format(totalValue)));
-
-                // Log transaction
-                economyEngine.getTransactionLog().log(
-                    TransactionLog.Type.SHOP_SELL,
-                    player.getUUID(), player.getName().getString(),
-                    null, null,
-                    totalValue, material, quantity,
-                    "Sold " + quantity + "x " + material + " to shop"
-                );
-
-                player.sendSystemMessage(message.append(
-                    TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-                    .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
-                );
             });
         });
     }
@@ -387,12 +407,7 @@ public class ShopManager {
      * which may include namespace prefixes or vary by mapping.
      */
     private String getMaterialName(net.minecraft.world.item.ItemStack stack) {
-        try {
-            return net.minecraft.core.registries.BuiltInRegistries.ITEM
-                .getKey(stack.getItem()).getPath().toUpperCase();
-        } catch (Exception e) {
-            return stack.getItem().toString().toUpperCase();
-        }
+        return TextUtil.getMaterialName(stack);
     }
 
     private boolean hasItemInInventory(ServerPlayer player, String material, int quantity) {
@@ -462,12 +477,7 @@ public class ShopManager {
      * Used by the sell system for item identification.
      */
     public static String getMaterialNameStatic(net.minecraft.world.item.ItemStack stack) {
-        try {
-            return net.minecraft.core.registries.BuiltInRegistries.ITEM
-                .getKey(stack.getItem()).getPath().toUpperCase();
-        } catch (Exception e) {
-            return stack.getItem().toString().toUpperCase();
-        }
+        return TextUtil.getMaterialName(stack);
     }
 
     // ── Getters ───────────────────────────────────────────

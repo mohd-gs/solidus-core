@@ -158,4 +158,24 @@ public final class TextUtil {
         // Remove the legacy section-sign character and the following code character
         return input.replaceAll("\u00A7[0-9a-fk-orA-FK-OR]", "");
     }
+
+    /**
+     * Extracts the registry path name from an ItemStack for reliable
+     * material matching. This avoids issues with getItem().toString()
+     * which may include namespace prefixes or vary by mapping.
+     *
+     * This is the shared utility method to avoid duplication across
+     * ShopManager, SellScreenHandler, and SellCommand.
+     *
+     * @param stack The ItemStack to extract the material name from
+     * @return The uppercase registry path name (e.g., "DIAMOND")
+     */
+    public static String getMaterialName(net.minecraft.world.item.ItemStack stack) {
+        try {
+            return net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .getKey(stack.getItem()).getPath().toUpperCase();
+        } catch (Exception e) {
+            return stack.getItem().toString().toUpperCase();
+        }
+    }
 }

@@ -708,12 +708,7 @@ public class SellScreenHandler extends AbstractContainerMenu {
      * material matching.
      */
     private String getMaterialName(ItemStack stack) {
-        try {
-            return net.minecraft.core.registries.BuiltInRegistries.ITEM
-                .getKey(stack.getItem()).getPath().toUpperCase();
-        } catch (Exception e) {
-            return stack.getItem().toString().toUpperCase();
-        }
+        return TextUtil.getMaterialName(stack);
     }
 
     // ── Custom Slot Implementation ──────────────────────────
