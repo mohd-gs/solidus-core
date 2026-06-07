@@ -1,7 +1,9 @@
 package com.solidus.economy;
 
-import com.solidus.SolidusMod;
 import com.solidus.util.CurrencyUtil;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -45,6 +47,8 @@ import java.util.concurrent.TimeUnit;
  * logs in, all pending notifications are delivered via chat messages.
  */
 public class TransactionLog {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(TransactionLog.class);
 
     private static final String CREATE_TABLE_SQL = """
         CREATE TABLE IF NOT EXISTS transaction_log (
@@ -107,7 +111,7 @@ public class TransactionLog {
             }
             // Unknown transaction type — log a warning instead of silently
             // falling back to PAY_SEND which would corrupt transaction semantics
-            SolidusMod.LOGGER.warn("Unknown transaction type code: '{}'. Defaulting to SHOP_BUY.", code);
+            LOGGER.warn("Unknown transaction type code: '{}'. Defaulting to SHOP_BUY.", code);
             return SHOP_BUY; // safe fallback — SHOP_BUY is the most generic type
         }
     }
@@ -147,7 +151,7 @@ public class TransactionLog {
             stmt.execute(CREATE_NOTIFICATIONS_TABLE_SQL);
             stmt.execute(CREATE_NOTIFICATIONS_INDEX_SQL);
         } catch (SQLException e) {
-            SolidusMod.LOGGER.error("Failed to initialize transaction log tables!", e);
+            LOGGER.error("Failed to initialize transaction log tables!", e);
         }
 
         // Load pending notifications into memory
@@ -193,7 +197,7 @@ public class TransactionLog {
                 ps.setString(10, description);
                 ps.executeUpdate();
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to log transaction: {} for player: {}", type, playerName, e);
+                LOGGER.error("Failed to log transaction: {} for player: {}", type, playerName, e);
             }
         }, asyncExecutor);
     }
@@ -218,7 +222,7 @@ public class TransactionLog {
                     }
                 }
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to get transactions for player: {}", playerUuid, e);
+                LOGGER.error("Failed to get transactions for player: {}", playerUuid, e);
             }
             return entries;
         }, asyncExecutor);
@@ -258,7 +262,7 @@ public class TransactionLog {
                 ps.setString(3, message);
                 ps.executeUpdate();
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to queue notification for player: {}", playerUuid, e);
+                LOGGER.error("Failed to queue notification for player: {}", playerUuid, e);
             }
         }, asyncExecutor);
     }
@@ -291,7 +295,7 @@ public class TransactionLog {
                     }
                 }
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to load pending notifications for: {}", player.getName().getString(), e);
+                LOGGER.error("Failed to load pending notifications for: {}", player.getName().getString(), e);
             }
             return messages;
         }, asyncExecutor).thenAccept(messages -> {
@@ -321,11 +325,11 @@ public class TransactionLog {
                 }
             }
         } catch (SQLException e) {
-            SolidusMod.LOGGER.error("Failed to load pending notifications from database", e);
+            LOGGER.error("Failed to load pending notifications from database", e);
         }
 
         if (!notificationCache.isEmpty()) {
-            SolidusMod.LOGGER.info("Loaded {} pending notifications for {} players.",
+            LOGGER.info("Loaded {} pending notifications for {} players.",
                 notificationCache.values().stream().mapToInt(List::size).sum(),
                 notificationCache.size());
         }
@@ -338,7 +342,7 @@ public class TransactionLog {
                 ps.setString(1, playerUuid.toString());
                 ps.executeUpdate();
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to delete pending notifications for: {}", playerUuid, e);
+                LOGGER.error("Failed to delete pending notifications for: {}", playerUuid, e);
             }
         }, asyncExecutor);
     }

@@ -60,6 +60,10 @@ public class ShopManager {
     // When processSell starts, the player UUID is added; it is removed when the async chain completes.
     private final Set<UUID> pendingSells = ConcurrentHashMap.newKeySet();
 
+    // Tracks players with a pending buy transaction to prevent double-buy race condition.
+    // When processBuy starts, the player UUID is added; it is removed when the async chain completes.
+    private final Set<UUID> pendingBuys = ConcurrentHashMap.newKeySet();
+
     public ShopManager(EconomyEngine economyEngine) {
         this.economyEngine = economyEngine;
     }
@@ -210,13 +214,20 @@ public class ShopManager {
      *
      * Transaction Flow (fully async — no server thread blocking):
      * 1. Validate the item exists and has a valid buy price
-     * 2. Check if the player has sufficient balance (async chain)
-     * 3. Atomically deduct the price from the player's balance (async chain)
-     * 4. Spawn the purchased item stack into the player's inventory
+     * 2. Prevent double-buy with pendingBuys guard
+     * 3. Atomically deduct the price from the player's balance (single async step)
+     * 4. On success, spawn the purchased item stack into the player's inventory
      *
-     * No .join() is used — all CompletableFuture operations are chained
-     * with .thenAccept() and server-thread callbacks via player.getServer().execute(),
-     * preventing any server tick thread blocking.
+     * TOCTOU Fix (v2):
+     * Previously, the balance was checked first (getBalance) then deducted
+     * (subtractBalance) in separate async steps with a server.execute() hop
+     * in between. This created a time-of-check/time-of-use gap where the
+     * player could spend money elsewhere between the check and deduction.
+     *
+     * Now, we skip the separate balance check and go straight to subtractBalance(),
+     * which atomically checks-and-deducts on the single-threaded economy executor.
+     * If the player has insufficient funds, subtractBalance returns -1.
+     * This eliminates the TOCTOU window entirely.
      *
      * @param player     The buying player
      * @param material   The Minecraft material name
@@ -230,53 +241,57 @@ public class ShopManager {
             return;
         }
 
+        // Prevent double-buy race condition
+        UUID playerId = player.getUUID();
+        if (!pendingBuys.add(playerId)) {
+            player.sendSystemMessage(TextUtil.error("A purchase is already in progress. Please wait."));
+            return;
+        }
+
         double totalCost = CurrencyUtil.round(item.buyPrice() * quantity);
         BalanceManager balanceManager = economyEngine.getBalanceManager();
 
-        // Full async chain — no .join(), no server thread blocking
-        balanceManager.getBalance(player).thenAccept(balance -> {
+        // Atomic check-and-deduct: subtractBalance checks funds AND deducts
+        // on the same single-threaded executor, eliminating the TOCTOU window.
+        balanceManager.subtractBalance(player, totalCost).thenAccept(newBalance -> {
             player.getServer().execute(() -> {
-                if (balance < totalCost) {
-                    player.sendSystemMessage(
-                        TextUtil.error("Insufficient funds! You need " + CurrencyUtil.format(totalCost)
-                            + " but only have " + CurrencyUtil.format(balance)));
-                    return;
-                }
-
-                // Deduct balance asynchronously
-                balanceManager.subtractBalance(player, totalCost).thenAccept(newBalance -> {
-                    player.getServer().execute(() -> {
-                        if (newBalance < 0) {
-                            player.sendSystemMessage(TextUtil.error("Transaction failed. Please try again."));
-                            return;
-                        }
-
-                        // Spawn item into player's inventory
-                        net.minecraft.world.item.ItemStack itemStack = createItemStack(material, quantity);
-                        if (!player.getInventory().add(itemStack)) {
-                            // Inventory full - drop at player's feet
-                            player.drop(itemStack, false);
-                            player.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
-                        }
-
-                        // Log transaction
-                        economyEngine.getTransactionLog().log(
-                            TransactionLog.Type.SHOP_BUY,
-                            player.getUUID(), player.getName().getString(),
-                            null, null,
-                            totalCost, material, quantity,
-                            "Bought " + quantity + "x " + material + " from shop"
-                        );
-
-                        // Success notification
+                try {
+                    if (newBalance < 0) {
+                        // Insufficient funds or failure — no money was deducted
                         player.sendSystemMessage(
-                            TextUtil.success("Purchased " + quantity + "x " + material + " for ")
-                                .append(TextUtil.currency(CurrencyUtil.format(totalCost)))
-                                .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-                                .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
-                        );
-                    });
-                });
+                            TextUtil.error("Insufficient funds! You need " + CurrencyUtil.format(totalCost)
+                                + " to complete this purchase."));
+                        return;
+                    }
+
+                    // Spawn item into player's inventory
+                    net.minecraft.world.item.ItemStack itemStack = createItemStack(material, quantity);
+                    if (!player.getInventory().add(itemStack)) {
+                        // Inventory full - drop at player's feet
+                        player.drop(itemStack, false);
+                        player.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
+                    }
+
+                    // Log transaction
+                    economyEngine.getTransactionLog().log(
+                        TransactionLog.Type.SHOP_BUY,
+                        player.getUUID(), player.getName().getString(),
+                        null, null,
+                        totalCost, material, quantity,
+                        "Bought " + quantity + "x " + material + " from shop"
+                    );
+
+                    // Success notification
+                    player.sendSystemMessage(
+                        TextUtil.success("Purchased " + quantity + "x " + material + " for ")
+                            .append(TextUtil.currency(CurrencyUtil.format(totalCost)))
+                            .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                            .append(TextUtil.currency(CurrencyUtil.format(newBalance)))
+                    );
+                } finally {
+                    // Always release the lock so the player can buy again
+                    pendingBuys.remove(playerId);
+                }
             });
         });
     }

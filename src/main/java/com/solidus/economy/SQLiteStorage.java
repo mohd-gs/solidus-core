@@ -1,7 +1,9 @@
 package com.solidus.economy;
 
-import com.solidus.SolidusMod;
 import com.solidus.util.CurrencyUtil;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -10,7 +12,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,23 +27,30 @@ import java.util.concurrent.TimeUnit;
  *
  * Architecture: Single-Threaded Executor Queue + In-Memory Cache + Persistent Connection
  *
- * Race Condition Strategy:
- * All balance mutations are processed through a dedicated single-thread executor,
- * which guarantees sequential execution without any overlap. An in-memory balance
- * cache (ConcurrentHashMap) provides instant reads without hitting the database,
- * while all writes update the cache first and then persist asynchronously to SQLite.
+ * Thread Safety Strategy (v2):
+ * All cache WRITES are processed through a dedicated single-thread executor,
+ * which guarantees sequential execution without any overlap. This eliminates
+ * race conditions between caller threads (server tick, command threads) and
+ * the executor worker thread.
+ *
+ * Key rules:
+ * - Cache READS (balanceCache.get) happen on the caller thread — safe because
+ *   ConcurrentHashMap guarantees per-key atomicity and visibility.
+ * - Cache WRITES (balanceCache.put, playerNameCache.put) happen ONLY on the
+ *   executor thread — either via supplyAsync() for new player creation, or
+ *   within existing supplyAsync() blocks for mutations.
+ * - Player name updates from getBalance() are scheduled via
+ *   asyncExecutor.execute() to prevent caller-thread writes from racing
+ *   with executor-thread writes from persistBalance().
+ * - New player creation uses a double-check pattern inside supplyAsync()
+ *   and putIfAbsent() to prevent redundant DB inserts when two threads
+ *   race on the same new UUID.
  *
  * Persistent Connection:
  * A single persistent SQLite connection is shared across all executor operations.
  * Since the single-threaded executor serializes all access, connection sharing is
  * inherently safe — no two operations can use the connection simultaneously.
  * This eliminates the overhead of opening/closing connections for every operation.
- *
- * Write Ordering:
- * New player INSERT operations use UPSERT (INSERT ... ON CONFLICT DO UPDATE) and
- * are submitted directly to the executor queue alongside all other mutations.
- * Since the executor is single-threaded, operations execute in submission order,
- * guaranteeing that a new player's INSERT completes before any subsequent UPDATE.
  *
  * Crash Resilience:
  * - WAL (Write-Ahead Logging) mode ensures committed transactions survive crashes.
@@ -50,6 +61,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class SQLiteStorage {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(SQLiteStorage.class);
     private static final String DATABASE_NAME = "economy.db";
     private static final String CREATE_TABLE_SQL = """
         CREATE TABLE IF NOT EXISTS player_balances (
@@ -124,10 +136,10 @@ public class SQLiteStorage {
             transactionLog.initialize();
 
             initialized = true;
-            SolidusMod.LOGGER.info("SQLite database initialized successfully. Cached {} player balances.",
+            LOGGER.info("SQLite database initialized successfully. Cached {} player balances.",
                 balanceCache.size());
         } catch (SQLException e) {
-            SolidusMod.LOGGER.error("CRITICAL: Failed to initialize SQLite database!", e);
+            LOGGER.error("CRITICAL: Failed to initialize SQLite database!", e);
             throw new RuntimeException("Solidus economy database initialization failed", e);
         }
     }
@@ -161,7 +173,7 @@ public class SQLiteStorage {
         try {
             if (!asyncExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
                 asyncExecutor.shutdownNow();
-                SolidusMod.LOGGER.warn("Economy executor forced shutdown after timeout.");
+                LOGGER.warn("Economy executor forced shutdown after timeout.");
             }
         } catch (InterruptedException e) {
             asyncExecutor.shutdownNow();
@@ -172,55 +184,71 @@ public class SQLiteStorage {
         if (persistentConnection != null) {
             try {
                 persistentConnection.close();
-                SolidusMod.LOGGER.info("Economy database connection closed.");
+                LOGGER.info("Economy database connection closed.");
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to close economy database connection", e);
+                LOGGER.error("Failed to close economy database connection", e);
             }
         }
 
-        SolidusMod.LOGGER.info("SQLite storage shut down complete.");
+        LOGGER.info("SQLite storage shut down complete.");
     }
 
-    // ── Instant Read Operations (from in-memory cache) ────
+    // ── Read Operations ─────────────────────────────────
 
     /**
-     * Retrieves a player's balance instantly from the in-memory cache.
+     * Retrieves a player's balance from the in-memory cache.
      *
-     * If the player has no record in the cache, a new entry is created
-     * with the default starting balance and persisted asynchronously.
-     *
-     * The new player INSERT uses UPSERT to guarantee ordering safety:
-     * since it is submitted to the same executor queue as all other mutations,
-     * it will complete before any subsequent UPDATE for the same UUID.
+     * Thread Safety Strategy (v2 — Race Condition Fix):
+     * - Cache reads (balanceCache.get) happen on the CALLER thread — safe due to
+     *   ConcurrentHashMap's per-key atomicity guarantees.
+     * - Player name updates are scheduled on the executor (fire-and-forget)
+     *   to prevent caller-thread writes from racing with executor-thread writes.
+     * - New player creation is delegated to the executor via supplyAsync(),
+     *   so that balanceCache.putIfAbsent() and DB persist both happen on the
+     *   same single-threaded executor that serializes all mutations.
+     * - A double-check pattern inside the executor prevents redundant persists
+     *   when two threads race on the same new UUID.
      *
      * @param uuid       The player's unique ID
      * @param playerName The player's display name (for record creation)
-     * @return CompletableFuture containing the player's balance (completes instantly)
+     * @return CompletableFuture containing the player's balance
      */
     public CompletableFuture<Double> getBalance(UUID uuid, String playerName) {
         ensureInitialized();
 
-        // Update player name cache whenever we see a non-empty name
+        // Schedule name refresh via executor (fire-and-forget, ordered with other mutations)
+        // This prevents the caller thread from writing playerNameCache directly,
+        // which could race with executor-thread writes from persistBalance().
         if (playerName != null && !playerName.isEmpty()) {
-            playerNameCache.put(uuid, playerName);
+            asyncExecutor.execute(() -> {
+                playerNameCache.put(uuid, playerName);
+            });
         }
 
-        // Check the in-memory cache first (instant, no DB query)
+        // Cache read — happens on caller thread, safe due to ConcurrentHashMap atomicity
         Double balance = balanceCache.get(uuid);
         if (balance != null) {
             return CompletableFuture.completedFuture(balance);
         }
 
-        // Player not in cache — create a new entry with the default starting balance
-        double startingBalance = CurrencyUtil.DEFAULT_STARTING_BALANCE;
-        balanceCache.put(uuid, startingBalance);
+        // New player: delegate to executor to prevent race on cache writes.
+        // All cache mutations and DB persist happen on the single-threaded executor,
+        // guaranteeing sequential ordering with addBalance/subtractBalance/setBalance.
+        return CompletableFuture.supplyAsync(() -> {
+            // Double-check: another thread may have populated this while we waited
+            Double cached = balanceCache.get(uuid);
+            if (cached != null) {
+                return cached;
+            }
 
-        // Persist the new player asynchronously using UPSERT
-        // This is submitted to the SAME executor queue as all other mutations,
-        // guaranteeing it completes before any subsequent UPDATE for this UUID
-        asyncPersistNewPlayer(uuid, playerName, startingBalance);
+            // Optimistic cache write — putIfAbsent prevents overwriting if raced
+            balanceCache.putIfAbsent(uuid, CurrencyUtil.DEFAULT_STARTING_BALANCE);
 
-        return CompletableFuture.completedFuture(startingBalance);
+            // Persist new player directly (we're already on the executor thread)
+            persistNewPlayerDirect(uuid, playerName, CurrencyUtil.DEFAULT_STARTING_BALANCE);
+
+            return CurrencyUtil.DEFAULT_STARTING_BALANCE;
+        }, asyncExecutor);
     }
 
     /**
@@ -258,7 +286,7 @@ public class SQLiteStorage {
                     }
                 }
             } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to get top balances from database", e);
+                LOGGER.error("Failed to get top balances from database", e);
                 // Fallback to in-memory sort if DB query fails
                 return balanceCache.entrySet().stream()
                     .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
@@ -288,7 +316,7 @@ public class SQLiteStorage {
         ensureInitialized();
         amount = CurrencyUtil.round(amount);
         if (!CurrencyUtil.isValidBalance(amount)) {
-            SolidusMod.LOGGER.warn("Invalid balance amount rejected: {}", amount);
+            LOGGER.warn("Invalid balance amount rejected: {}", amount);
             return CompletableFuture.completedFuture(false);
         }
 
@@ -302,7 +330,7 @@ public class SQLiteStorage {
                 } else {
                     balanceCache.remove(uuid);
                 }
-                SolidusMod.LOGGER.error("Failed to persist balance for UUID: {}. Cache rolled back to previous value.", uuid);
+                LOGGER.error("Failed to persist balance for UUID: {}. Cache rolled back to previous value.", uuid);
             }
             return success;
         }, asyncExecutor);
@@ -325,7 +353,7 @@ public class SQLiteStorage {
             double newBalance = CurrencyUtil.round(currentBalance + amount);
 
             if (!CurrencyUtil.isValidBalance(newBalance)) {
-                SolidusMod.LOGGER.warn("Balance overflow prevented for UUID: {} (would be {})",
+                LOGGER.warn("Balance overflow prevented for UUID: {} (would be {})",
                     uuid, newBalance);
                 return -1.0;
             }
@@ -334,7 +362,7 @@ public class SQLiteStorage {
             boolean success = persistBalance(uuid, playerName, newBalance);
             if (!success) {
                 balanceCache.put(uuid, currentBalance);
-                SolidusMod.LOGGER.error("Failed to persist add-balance for UUID: {}. Cache rolled back.", uuid);
+                LOGGER.error("Failed to persist add-balance for UUID: {}. Cache rolled back.", uuid);
                 return -1.0;
             }
 
@@ -366,7 +394,7 @@ public class SQLiteStorage {
             boolean success = persistBalance(uuid, playerName, newBalance);
             if (!success) {
                 balanceCache.put(uuid, currentBalance);
-                SolidusMod.LOGGER.error("Failed to persist subtract-balance for UUID: {}. Cache rolled back.", uuid);
+                LOGGER.error("Failed to persist subtract-balance for UUID: {}. Cache rolled back.", uuid);
                 return -1.0;
             }
 
@@ -423,43 +451,40 @@ public class SQLiteStorage {
             ps.executeUpdate();
             return true;
         } catch (SQLException e) {
-            SolidusMod.LOGGER.error("Failed to persist balance for UUID: {}", uuid, e);
+            LOGGER.error("Failed to persist balance for UUID: {}", uuid, e);
             return false;
         }
     }
 
     /**
-     * Persists a new player record to SQLite using the persistent connection.
+     * Persists a new player record to SQLite directly on the current thread.
      *
-     * Uses UPSERT (INSERT ... ON CONFLICT DO UPDATE) instead of INSERT OR IGNORE
-     * to guarantee correct ordering: since this is submitted to the SAME executor
-     * queue as all other mutations, it will execute in submission order. If a
-     * subtractBalance() for the same UUID arrives after this, the UPSERT ensures
-     * the player row exists before the subtract's UPSERT runs.
+     * Must be called from the asyncExecutor thread (no submission to executor here
+     * — the caller is already running on it).
      *
-     * Previous issue: INSERT OR IGNORE could silently fail if a row already existed,
-     * and a subsequent UPSERT from subtractBalance could execute before the INSERT,
-     * causing unexpected behavior. The UPSERT approach handles all cases correctly.
+     * Uses UPSERT (INSERT ... ON CONFLICT DO UPDATE) to guarantee correct ordering:
+     * since this runs on the same executor thread as all other mutations, it executes
+     * sequentially with addBalance/subtractBalance/setBalance for the same UUID.
+     * The UPSERT ensures the player row is created or updated atomically regardless
+     * of whether a concurrent operation already inserted the row.
      */
-    private void asyncPersistNewPlayer(UUID uuid, String playerName, double balance) {
-        CompletableFuture.runAsync(() -> {
-            String upsertSql = """
-                INSERT INTO player_balances (uuid, player_name, balance, last_updated)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(uuid) DO UPDATE SET
-                    player_name = excluded.player_name,
-                    last_updated = excluded.last_updated
-            """;
-            try (PreparedStatement ps = persistentConnection.prepareStatement(upsertSql)) {
-                ps.setString(1, uuid.toString());
-                ps.setString(2, playerName);
-                ps.setDouble(3, balance);
-                ps.setLong(4, System.currentTimeMillis());
-                ps.executeUpdate();
-            } catch (SQLException e) {
-                SolidusMod.LOGGER.error("Failed to persist new player: {}", uuid, e);
-            }
-        }, asyncExecutor);
+    private void persistNewPlayerDirect(UUID uuid, String playerName, double balance) {
+        String upsertSql = """
+            INSERT INTO player_balances (uuid, player_name, balance, last_updated)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(uuid) DO UPDATE SET
+                player_name = excluded.player_name,
+                last_updated = excluded.last_updated
+        """;
+        try (PreparedStatement ps = persistentConnection.prepareStatement(upsertSql)) {
+            ps.setString(1, uuid.toString());
+            ps.setString(2, playerName);
+            ps.setDouble(3, balance);
+            ps.setLong(4, System.currentTimeMillis());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            LOGGER.error("Failed to persist new player: {}", uuid, e);
+        }
     }
 
     /**
@@ -471,11 +496,15 @@ public class SQLiteStorage {
     }
 
     /**
-     * Returns the player name cache for offline player lookups.
+     * Returns an unmodifiable view of the player name cache for offline player lookups.
      * Maps UUID → last known player name.
+     *
+     * The returned map is read-only to prevent external code from bypassing
+     * the single-threaded executor contract for cache mutations. All writes
+     * to playerNameCache must go through the executor thread.
      */
-    public ConcurrentHashMap<UUID, String> getPlayerNameCache() {
-        return playerNameCache;
+    public Map<UUID, String> getPlayerNameCache() {
+        return Collections.unmodifiableMap(playerNameCache);
     }
 
     /**

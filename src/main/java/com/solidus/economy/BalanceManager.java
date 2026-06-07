@@ -1,7 +1,9 @@
 package com.solidus.economy;
 
-import com.solidus.SolidusMod;
 import com.solidus.util.CurrencyUtil;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.minecraft.server.level.ServerPlayer;
 
@@ -26,6 +28,8 @@ import java.util.concurrent.CompletableFuture;
  *   to prevent race conditions and duplication glitches.
  */
 public class BalanceManager {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(BalanceManager.class);
 
     private final SQLiteStorage storage;
 
@@ -65,7 +69,7 @@ public class BalanceManager {
      */
     public CompletableFuture<Boolean> setBalance(ServerPlayer player, double amount) {
         if (!CurrencyUtil.isValidBalance(amount)) {
-            SolidusMod.LOGGER.warn("Invalid balance set rejected for {}: {}", player.getName().getString(), amount);
+            LOGGER.warn("Invalid balance set rejected for {}: {}", player.getName().getString(), amount);
             return CompletableFuture.completedFuture(false);
         }
         return storage.setBalance(player.getUUID(), player.getName().getString(), amount);
@@ -81,7 +85,7 @@ public class BalanceManager {
      */
     public CompletableFuture<Double> addBalance(ServerPlayer player, double amount) {
         if (!CurrencyUtil.isValidAmount(amount)) {
-            SolidusMod.LOGGER.warn("Invalid add-balance amount rejected: {}", amount);
+            LOGGER.warn("Invalid add-balance amount rejected: {}", amount);
             return CompletableFuture.completedFuture(-1.0);
         }
         return storage.addBalance(player.getUUID(), player.getName().getString(), amount);
@@ -113,7 +117,7 @@ public class BalanceManager {
      */
     public CompletableFuture<Double> subtractBalance(ServerPlayer player, double amount) {
         if (!CurrencyUtil.isValidAmount(amount)) {
-            SolidusMod.LOGGER.warn("Invalid subtract-balance amount rejected: {}", amount);
+            LOGGER.warn("Invalid subtract-balance amount rejected: {}", amount);
             return CompletableFuture.completedFuture(-1.0);
         }
         return storage.subtractBalance(player.getUUID(), player.getName().getString(), amount);
@@ -134,7 +138,7 @@ public class BalanceManager {
      */
     public CompletableFuture<Double> subtractBalance(UUID uuid, String playerName, double amount) {
         if (!CurrencyUtil.isValidAmount(amount)) {
-            SolidusMod.LOGGER.warn("Invalid subtract-balance amount rejected: {}", amount);
+            LOGGER.warn("Invalid subtract-balance amount rejected: {}", amount);
             return CompletableFuture.completedFuture(-1.0);
         }
         return storage.subtractBalance(uuid, playerName, amount);
@@ -230,7 +234,7 @@ public class BalanceManager {
                         if (newReceiverBalance < 0) {
                             // CRITICAL: Addition failed after deduction - log error
                             // Attempt to refund sender
-                            SolidusMod.LOGGER.error(
+                            LOGGER.error(
                                 "CRITICAL: Transfer add failed after deduct! Refunding sender. Sender: {}, Receiver: {}, Amount: {}",
                                 senderName, receiverName, amount);
                             storage.addBalance(senderUuid, senderName, amount);
