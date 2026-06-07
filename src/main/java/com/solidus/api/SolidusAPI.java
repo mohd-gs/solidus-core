@@ -58,7 +58,7 @@ import java.util.concurrent.CompletableFuture;
  */
 public final class SolidusAPI {
 
-    private static SolidusAPI instance;
+    private static volatile SolidusAPI instance;
 
     private final EconomyEngine engine;
 

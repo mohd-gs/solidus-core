@@ -137,12 +137,13 @@ public final class TextUtil {
 
     /**
      * Formats a numeric value as a currency string.
+     * Uses 2 decimal places to match CurrencyUtil.format() consistency.
      */
     public static String formatCurrency(double amount) {
         if (amount == (long) amount) {
             return String.format("%,d", (long) amount) + " S$";
         }
-        return String.format("%,.1f", amount) + " S$";
+        return String.format("%,.2f", amount) + " S$";
     }
 
     /**

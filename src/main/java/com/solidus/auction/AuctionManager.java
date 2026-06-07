@@ -21,8 +21,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -92,6 +94,13 @@ public class AuctionManager {
 
     /** Persistent database connection — shared across all executor operations */
     private volatile Connection persistentConnection;
+
+    /**
+     * Tracks players with a pending listing operation to prevent:
+     * 1. Concurrent listings that could double-charge listing fees
+     * 2. TOCTOU between the held item capture and item removal
+     */
+    private final Set<UUID> pendingListings = ConcurrentHashMap.newKeySet();
 
     public AuctionManager(EconomyEngine economyEngine) {
         this.economyEngine = economyEngine;
@@ -197,45 +206,53 @@ public class AuctionManager {
             return;
         }
 
+        // Prevent concurrent listings for the same player
+        UUID playerId = player.getUUID();
+        if (!pendingListings.add(playerId)) {
+            player.sendSystemMessage(TextUtil.error("A listing is already in progress. Please wait."));
+            return;
+        }
+
         // Calculate listing fee
         double listingFee = AuctionEntry.calculateListingFee(price);
         BalanceManager balanceManager = economyEngine.getBalanceManager();
 
-        // Full async chain — no .join(), no server thread blocking
-        balanceManager.getBalance(player).thenAccept(balance -> {
+        // Capture item details NOW (before any async hops) to prevent
+        // the player swapping items in their hand during the async chain
+        String materialName = heldItem.getItem().toString().toUpperCase();
+        int quantity = heldItem.getCount();
+        String itemNbt = serializeItemStack(heldItem);
+        int selectedSlot = player.getInventory().getSelectedSlot();
+
+        // TOCTOU Fix: Skip the separate getBalance check and go directly to
+        // subtractBalance, which atomically checks-and-deducts on the
+        // single-threaded economy executor. This eliminates the window where
+        // the player could spend money elsewhere between check and deduction.
+        balanceManager.subtractBalance(player, listingFee).thenAccept(newBalance -> {
             player.getServer().execute(() -> {
-                if (balance < listingFee) {
-                    player.sendSystemMessage(TextUtil.error(
-                        "Listing fee is " + CurrencyUtil.format(listingFee) +
-                        ". You only have " + CurrencyUtil.format(balance)));
-                    return;
-                }
+                try {
+                    if (newBalance < 0) {
+                        // Insufficient funds or failure — no money was deducted
+                        player.sendSystemMessage(TextUtil.error(
+                            "Listing fee is " + CurrencyUtil.format(listingFee) +
+                            ". Insufficient funds!"));
+                        return;
+                    }
 
-                // Deduct listing fee asynchronously
-                balanceManager.subtractBalance(player, listingFee).thenAccept(newBalance -> {
-                    player.getServer().execute(() -> {
-                        if (newBalance < 0) {
-                            player.sendSystemMessage(TextUtil.error("Failed to deduct listing fee. Please try again."));
-                            return;
-                        }
+                    // Create the listing
+                    AuctionEntry entry = AuctionEntry.create(
+                        player.getUUID(), player.getName().getString(),
+                        materialName, quantity, itemNbt, price
+                    );
 
-                        // Create the listing
-                        String materialName = heldItem.getItem().toString().toUpperCase();
-                        int quantity = heldItem.getCount();
-                        String itemNbt = serializeItemStack(heldItem);
-
-                        AuctionEntry entry = AuctionEntry.create(
-                            player.getUUID(), player.getName().getString(),
-                            materialName, quantity, itemNbt, price
-                        );
-
-                        // Save to database first, THEN remove item from player's hand
-                        // This prevents item loss if the database save fails
-                        saveListing(entry).thenAccept(success -> {
-                            player.getServer().execute(() -> {
+                    // Save to database first, THEN remove item from player's hand
+                    // This prevents item loss if the database save fails
+                    saveListing(entry).thenAccept(success -> {
+                        player.getServer().execute(() -> {
+                            try {
                                 if (success) {
                                     // Item saved successfully — now safe to remove from player
-                                    player.getInventory().setItem(player.getInventory().getSelectedSlot(), ItemStack.EMPTY);
+                                    player.getInventory().setItem(selectedSlot, ItemStack.EMPTY);
 
                                     // Log transaction
                                     economyEngine.getTransactionLog().log(
@@ -259,10 +276,18 @@ public class AuctionManager {
                                         "Failed to list item. Listing fee refunded."));
                                     balanceManager.addBalance(player, listingFee);
                                 }
-                            });
+                            } finally {
+                                pendingListings.remove(playerId);
+                            }
                         });
                     });
-                });
+                } finally {
+                    // Release the pending guard for non-saveListing paths
+                    // (saveListing path releases in its own finally block)
+                    if (newBalance < 0) {
+                        pendingListings.remove(playerId);
+                    }
+                }
             });
         });
     }
@@ -352,11 +377,14 @@ public class AuctionManager {
 
                 AuctionEntry entry = (AuctionEntry) result;
 
-                // Check if buyer can afford it — full async chain, no .join()
-                balanceManager.getBalance(buyer).thenAccept(buyerBalance -> {
+                // TOCTOU Fix: Skip the separate getBalance check and go directly
+                // to subtractBalance, which atomically checks-and-deducts on the
+                // single-threaded economy executor. This eliminates the window where
+                // the buyer could spend money elsewhere between the check and deduction.
+                balanceManager.subtractBalance(buyer, entry.price()).thenAccept(newBuyerBalance -> {
                     buyer.getServer().execute(() -> {
-                        if (buyerBalance < entry.price()) {
-                            // Buyer can't afford — rollback the sale
+                        if (newBuyerBalance < 0) {
+                            // Buyer couldn't afford — no money was deducted, rollback the sale
                             SolidusMod.LOGGER.warn("Auction buyer {} cannot afford listing {}. Rolling back.",
                                 buyer.getName().getString(), entry.listingId());
                             markAsUnsold(entry.listingId());
@@ -364,70 +392,56 @@ public class AuctionManager {
                             return;
                         }
 
-                        // Deduct from buyer — async chain, no .join()
-                        balanceManager.subtractBalance(buyer, entry.price()).thenAccept(newBuyerBalance -> {
-                            buyer.getServer().execute(() -> {
-                                if (newBuyerBalance < 0) {
-                                    // CRITICAL: Balance deduction failed after marking sold — rollback
-                                    SolidusMod.LOGGER.error("CRITICAL: Balance deduction failed after marking listing {} as sold! Rolling back.",
-                                        entry.listingId());
-                                    markAsUnsold(entry.listingId());
-                                    buyer.sendSystemMessage(TextUtil.error("Transaction failed. Please try again."));
-                                    return;
+                        // Pay the seller
+                        balanceManager.addBalance(entry.sellerUuid(), entry.sellerName(), entry.price())
+                            .thenAccept(newSellerBalance -> {
+                                if (newSellerBalance < 0) {
+                                    SolidusMod.LOGGER.error("CRITICAL: Failed to pay auction seller {} for listing {}",
+                                        entry.sellerName(), entry.listingId());
                                 }
-
-                                // Pay the seller
-                                balanceManager.addBalance(entry.sellerUuid(), entry.sellerName(), entry.price())
-                                    .thenAccept(newSellerBalance -> {
-                                        if (newSellerBalance < 0) {
-                                            SolidusMod.LOGGER.error("CRITICAL: Failed to pay auction seller {} for listing {}",
-                                                entry.sellerName(), entry.listingId());
-                                        }
-                                    });
-
-                                // Give item to buyer
-                                ItemStack purchasedItem = deserializeItemStack(entry.itemNbt(), entry.materialName(), entry.quantity());
-                                if (!buyer.getInventory().add(purchasedItem)) {
-                                    buyer.drop(purchasedItem, false);
-                                    buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
-                                }
-
-                                // Log transaction for buyer
-                                economyEngine.getTransactionLog().log(
-                                    TransactionLog.Type.AUCTION_BOUGHT,
-                                    buyer.getUUID(), buyer.getName().getString(),
-                                    entry.sellerUuid(), entry.sellerName(),
-                                    entry.price(), entry.materialName(), entry.quantity(),
-                                    "Bought " + entry.quantity() + "x " + entry.materialName() + " from " + entry.sellerName()
-                                );
-
-                                // Log transaction for seller (may be offline)
-                                economyEngine.getTransactionLog().log(
-                                    TransactionLog.Type.AUCTION_SOLD,
-                                    entry.sellerUuid(), entry.sellerName(),
-                                    buyer.getUUID(), buyer.getName().getString(),
-                                    entry.price(), entry.materialName(), entry.quantity(),
-                                    "Sold " + entry.quantity() + "x " + entry.materialName() + " to " + buyer.getName().getString()
-                                );
-
-                                // Queue notification for seller (delivers immediately if online)
-                                economyEngine.getTransactionLog().queueNotification(
-                                    entry.sellerUuid(),
-                                    "Your auction item " + entry.quantity() + "x " + entry.materialName() +
-                                        " was purchased by " + buyer.getName().getString() + " for " +
-                                        CurrencyUtil.format(entry.price()),
-                                    buyer.getServer()
-                                );
-
-                                // Success notification
-                                buyer.sendSystemMessage(
-                                    TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
-                                        .append(TextUtil.currency(CurrencyUtil.format(entry.price())))
-                                        .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-                                        .append(TextUtil.currency(CurrencyUtil.format(newBuyerBalance)))
-                                );
                             });
-                        });
+
+                        // Give item to buyer
+                        ItemStack purchasedItem = deserializeItemStack(entry.itemNbt(), entry.materialName(), entry.quantity());
+                        if (!buyer.getInventory().add(purchasedItem)) {
+                            buyer.drop(purchasedItem, false);
+                            buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
+                        }
+
+                        // Log transaction for buyer
+                        economyEngine.getTransactionLog().log(
+                            TransactionLog.Type.AUCTION_BOUGHT,
+                            buyer.getUUID(), buyer.getName().getString(),
+                            entry.sellerUuid(), entry.sellerName(),
+                            entry.price(), entry.materialName(), entry.quantity(),
+                            "Bought " + entry.quantity() + "x " + entry.materialName() + " from " + entry.sellerName()
+                        );
+
+                        // Log transaction for seller (may be offline)
+                        economyEngine.getTransactionLog().log(
+                            TransactionLog.Type.AUCTION_SOLD,
+                            entry.sellerUuid(), entry.sellerName(),
+                            buyer.getUUID(), buyer.getName().getString(),
+                            entry.price(), entry.materialName(), entry.quantity(),
+                            "Sold " + entry.quantity() + "x " + entry.materialName() + " to " + buyer.getName().getString()
+                        );
+
+                        // Queue notification for seller (delivers immediately if online)
+                        economyEngine.getTransactionLog().queueNotification(
+                            entry.sellerUuid(),
+                            "Your auction item " + entry.quantity() + "x " + entry.materialName() +
+                                " was purchased by " + buyer.getName().getString() + " for " +
+                                CurrencyUtil.format(entry.price()),
+                            buyer.getServer()
+                        );
+
+                        // Success notification
+                        buyer.sendSystemMessage(
+                            TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
+                                .append(TextUtil.currency(CurrencyUtil.format(entry.price())))
+                                .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                                .append(TextUtil.currency(CurrencyUtil.format(newBuyerBalance)))
+                        );
                     });
                 });
             });

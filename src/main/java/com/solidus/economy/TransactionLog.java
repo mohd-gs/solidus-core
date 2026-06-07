@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -133,8 +134,13 @@ public class TransactionLog {
     private final Connection persistentConnection;
     private final ExecutorService asyncExecutor;
 
-    /** In-memory cache of pending notifications, keyed by player UUID */
-    private final ConcurrentHashMap<UUID, List<String>> notificationCache = new ConcurrentHashMap<>();
+    /**
+     * In-memory cache of pending notifications, keyed by player UUID.
+     * Uses CopyOnWriteArrayList for thread-safe concurrent access:
+     * queueNotification() may be called from executor completion callbacks
+     * while deliverPendingNotifications() runs on the server tick thread.
+     */
+    private final ConcurrentHashMap<UUID, CopyOnWriteArrayList<String>> notificationCache = new ConcurrentHashMap<>();
 
     public TransactionLog(Connection persistentConnection, ExecutorService asyncExecutor) {
         this.persistentConnection = persistentConnection;
@@ -252,7 +258,9 @@ public class TransactionLog {
         }
 
         // Player is offline — store notification
-        notificationCache.computeIfAbsent(playerUuid, k -> new ArrayList<>()).add(message);
+        // CopyOnWriteArrayList ensures thread-safe add() even when multiple
+        // executor callbacks race for the same player UUID
+        notificationCache.computeIfAbsent(playerUuid, k -> new CopyOnWriteArrayList<>()).add(message);
 
         CompletableFuture.runAsync(() -> {
             String sql = "INSERT INTO pending_notifications (timestamp, player_uuid, message) VALUES (?, ?, ?)";
@@ -274,21 +282,38 @@ public class TransactionLog {
      * @param player The player who just connected
      */
     public void deliverPendingNotifications(net.minecraft.server.level.ServerPlayer player) {
-        // Deliver in-memory cache first
-        List<String> cached = notificationCache.remove(player.getUUID());
+        UUID playerUuid = player.getUUID();
+
+        // Step 1: Deliver in-memory cache immediately (synchronous)
+        List<String> cached = notificationCache.remove(playerUuid);
+
         if (cached != null && !cached.isEmpty()) {
+            // Deliver cached notifications
             for (String msg : cached) {
                 player.sendSystemMessage(com.solidus.util.TextUtil.styled(
                     "[Solidus] " + msg, net.minecraft.ChatFormatting.AQUA));
             }
+
+            // Delete ALL DB notifications for this player (async, fire-and-forget).
+            // Since the in-memory cache mirrors the DB for the current session,
+            // any notification in the cache is also in the DB. Deleting all DB
+            // rows for this player prevents duplicate delivery on next login.
+            deletePendingNotifications(playerUuid);
+
+            // No need to query DB — the cache contains everything for the
+            // current server session. DB is only queried if the cache was
+            // empty (edge case: server restarted and cache wasn't populated).
+            return;
         }
 
-        // Also check the database for any notifications that survived a restart
+        // Step 2: Cache was empty — check DB for notifications that survived
+        // a server restart (i.e., persisted to DB before crash but not loaded
+        // into cache because loadPendingNotifications runs during initialize()).
         CompletableFuture.supplyAsync(() -> {
             List<String> messages = new ArrayList<>();
             String sql = "SELECT message FROM pending_notifications WHERE player_uuid = ? ORDER BY timestamp ASC";
             try (PreparedStatement ps = persistentConnection.prepareStatement(sql)) {
-                ps.setString(1, player.getUUID().toString());
+                ps.setString(1, playerUuid.toString());
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         messages.add(rs.getString("message"));
@@ -300,14 +325,21 @@ public class TransactionLog {
             return messages;
         }, asyncExecutor).thenAccept(messages -> {
             if (!messages.isEmpty()) {
-                player.getServer().execute(() -> {
+                // Verify the player is still online before sending
+                net.minecraft.server.MinecraftServer server = player.getServer();
+                if (server == null) return;
+
+                server.execute(() -> {
+                    // Double-check player is still connected
+                    if (server.getPlayerList().getPlayer(playerUuid) == null) return;
+
                     for (String msg : messages) {
                         player.sendSystemMessage(com.solidus.util.TextUtil.styled(
                             "[Solidus] " + msg, net.minecraft.ChatFormatting.AQUA));
                     }
+                    // Delete delivered notifications from DB
+                    deletePendingNotifications(playerUuid);
                 });
-                // Delete delivered notifications from DB
-                deletePendingNotifications(player.getUUID());
             }
         });
     }
@@ -321,7 +353,7 @@ public class TransactionLog {
                 while (rs.next()) {
                     UUID uuid = UUID.fromString(rs.getString("player_uuid"));
                     String message = rs.getString("message");
-                    notificationCache.computeIfAbsent(uuid, k -> new ArrayList<>()).add(message);
+                    notificationCache.computeIfAbsent(uuid, k -> new CopyOnWriteArrayList<>()).add(message);
                 }
             }
         } catch (SQLException e) {

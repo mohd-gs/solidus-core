@@ -585,26 +585,29 @@ public class SellScreenHandler extends AbstractContainerMenu {
             EconomyEngine economyEngine = shopManager.getEconomyEngine();
             BalanceManager balanceManager = economyEngine.getBalanceManager();
 
-            balanceManager.addBalance(player, totalEarnings).thenAccept(newBalance -> {
-                player.getServer().execute(() -> {
+            // Use this.player (ServerPlayer) instead of the method parameter
+            // (Player), since BalanceManager.addBalance requires ServerPlayer
+            // and player.getServer() requires ServerPlayer.
+            balanceManager.addBalance(this.player, totalEarnings).thenAccept(newBalance -> {
+                this.player.getServer().execute(() -> {
                     if (newBalance < 0) {
                         SolidusMod.LOGGER.error("CRITICAL: Sell GUI balance add failed for {}! Items sold but no money received. Amount: {}",
-                            player.getName().getString(), totalEarnings);
-                        player.sendSystemMessage(TextUtil.error("Transaction error. Please contact an admin."));
+                            this.player.getName().getString(), totalEarnings);
+                        this.player.sendSystemMessage(TextUtil.error("Transaction error. Please contact an admin."));
                         return;
                     }
 
                     // Log transaction
                     economyEngine.getTransactionLog().log(
                         TransactionLog.Type.SHOP_SELL,
-                        player.getUUID(), player.getName().getString(),
+                        this.player.getUUID(), this.player.getName().getString(),
                         null, null,
                         totalEarnings, "VARIOUS", totalItemsSold,
                         "Sold " + totalItemsSold + " items via sell GUI for " + CurrencyUtil.format(totalEarnings)
                     );
 
                     // Success notification
-                    player.sendSystemMessage(
+                    this.player.sendSystemMessage(
                         TextUtil.success("Sold " + totalItemsSold + " item(s) for ")
                             .append(TextUtil.currency(CurrencyUtil.format(totalEarnings)))
                             .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
@@ -614,10 +617,10 @@ public class SellScreenHandler extends AbstractContainerMenu {
             });
         } else if (unsellableItems.isEmpty()) {
             // No items were placed in the GUI
-            player.sendSystemMessage(TextUtil.styled("No items to sell.", ChatFormatting.GRAY));
+            this.player.sendSystemMessage(TextUtil.styled("No items to sell.", ChatFormatting.GRAY));
         } else {
             // Some items couldn't be sold
-            player.sendSystemMessage(TextUtil.warning(
+            this.player.sendSystemMessage(TextUtil.warning(
                 "None of the placed items could be sold. They have been returned to your inventory."));
         }
 
