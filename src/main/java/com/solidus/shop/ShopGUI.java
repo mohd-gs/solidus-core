@@ -79,13 +79,15 @@ public final class ShopGUI {
 
         // If more than 9 sections, continue in the next rows
         if (shopManager.getSections().size() > 9) {
+            int entryIndex = 0;
             slotIndex = ITEMS_START;
             for (Map.Entry<String, ShopManager.ShopSection> entry : shopManager.getSections().entrySet()) {
-                if (slotIndex < 9) { slotIndex++; continue; } // Skip already placed
+                if (entryIndex < 9) { entryIndex++; continue; } // Skip already placed in header
                 ShopManager.ShopSection section = entry.getValue();
                 ItemStack icon = createSectionIcon(section);
                 slots.add(new GuiSlot(slotIndex, icon, GuiSlot.Type.SECTION_BUTTON, entry.getKey()));
                 slotIndex++;
+                entryIndex++;
             }
         }
 

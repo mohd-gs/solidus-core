@@ -51,7 +51,7 @@ public class SolidusMod implements DedicatedServerModInitializer {
     private static RateLimiter rateLimiter;
 
     /** Tick counter for periodic tasks (auction expiration check every 5 minutes) */
-    private static int tickCounter = 0;
+    private static long tickCounter = 0;
     private static final int AUCTION_EXPIRY_CHECK_INTERVAL = 6000; // 5 minutes (6000 ticks)
 
     @Override

@@ -129,7 +129,11 @@ public class SellCommand {
         List<String> soldItems = new ArrayList<>();
 
         // Process regular inventory items
+        // Minecraft inventory layout: slots 0-35 = main + hotbar, 36-39 = armor, 40 = offhand
+        // Skip armor slots (36-39) to prevent accidental armor sales
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            if (i >= 36 && i <= 39) continue; // Skip armor slots
+
             ItemStack stack = player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;
 
@@ -325,11 +329,11 @@ public class SellCommand {
             }
         }
 
-        // Then try partial match (contains)
+        // Then try partial match (contains) — only one-direction: material contains search term
+        // The reverse direction (normalized contains material) is too broad and matches unrelated items
         for (Map.Entry<String, ShopManager.ShopSection> sectionEntry : shopManager.getSections().entrySet()) {
             for (ShopManager.ShopItem item : sectionEntry.getValue().items()) {
-                if (item.material().toUpperCase().contains(normalized) ||
-                    normalized.contains(item.material().toUpperCase())) {
+                if (item.material().toUpperCase().contains(normalized)) {
                     return item;
                 }
             }

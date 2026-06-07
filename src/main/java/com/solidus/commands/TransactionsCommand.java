@@ -80,11 +80,18 @@ public class TransactionsCommand {
 
                 // Footer with page info
                 int totalPages = (int) Math.ceil((double) allEntries.size() / PAGE_SIZE);
-                player.sendSystemMessage(
-                    TextUtil.styled("Page " + page + "/" + totalPages + " — ",
-                        ChatFormatting.GRAY)
-                        .append(TextUtil.styled("/transactions " + (page + 1), ChatFormatting.AQUA))
-                );
+                if (page < totalPages) {
+                    player.sendSystemMessage(
+                        TextUtil.styled("Page " + page + "/" + totalPages + " — ",
+                            ChatFormatting.GRAY)
+                            .append(TextUtil.styled("/transactions " + (page + 1), ChatFormatting.AQUA))
+                    );
+                } else {
+                    player.sendSystemMessage(
+                        TextUtil.styled("Page " + page + "/" + totalPages + " (last page)",
+                            ChatFormatting.GRAY)
+                    );
+                }
 
                 player.sendSystemMessage(TextUtil.styledBold(
                     "═══════════════════════════════════", ChatFormatting.GOLD));

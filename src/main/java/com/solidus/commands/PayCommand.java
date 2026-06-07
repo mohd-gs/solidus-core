@@ -115,7 +115,10 @@ public class PayCommand {
         // Perform atomic transfer
         balanceManager.transfer(sender, receiver, amount).thenAccept(result -> {
             // Schedule notification on the server thread
-            sender.getServer().execute(() -> {
+            var server = sender.getServer();
+            if (server == null) return;
+
+            server.execute(() -> {
                 if (result.success()) {
                     // Notify sender
                     sender.sendSystemMessage(
@@ -204,56 +207,53 @@ public class PayCommand {
 
         final UUID receiverUuid = targetUuid;
 
-        // Offline transfer: deduct from sender (online), add to receiver (offline)
-        balanceManager.subtractBalance(sender, amount).thenAccept(newSenderBalance -> {
-            sender.getServer().execute(() -> {
-                if (newSenderBalance < 0) {
-                    sender.sendSystemMessage(TextUtil.error("Insufficient funds!"));
+        // Offline transfer: use atomic transferOffline() which handles
+        // deduct-then-add with automatic rollback on failure.
+        balanceManager.transferOffline(
+            sender.getUUID(), sender.getName().getString(),
+            receiverUuid, targetName,
+            amount
+        ).thenAccept(result -> {
+            var server = sender.getServer();
+            if (server == null) return;
+
+            server.execute(() -> {
+                if (!result.success()) {
+                    sender.sendSystemMessage(TextUtil.error(result.message()));
                     return;
                 }
 
-                // Add to offline receiver's balance
-                balanceManager.addBalance(receiverUuid, targetName, amount).thenAccept(newReceiverBalance -> {
-                    sender.getServer().execute(() -> {
-                        if (newReceiverBalance < 0) {
-                            // CRITICAL: Addition failed after deduction — refund sender
-                            SolidusMod.LOGGER.error(
-                                "CRITICAL: Offline pay add failed after deduct! Refunding sender. Sender: {}, Target: {}, Amount: {}",
-                                sender.getName().getString(), targetName, amount);
-                            balanceManager.addBalance(sender, amount);
-                            sender.sendSystemMessage(TextUtil.error("Transfer failed. Please try again."));
-                            return;
-                        }
+                // Transfer succeeded — addBalance was already done inside transferOffline
+                // We just need the sender's new balance for the notification
+                double newSenderBalance = result.senderNewBalance();
 
-                        // Notify sender
-                        sender.sendSystemMessage(
-                            TextUtil.success("You paid " + targetName + " (offline) ")
-                                .append(TextUtil.currency(CurrencyUtil.format(amount)))
-                                .append(TextUtil.plain(". "))
-                                .append(TextUtil.styled("New balance: ", net.minecraft.ChatFormatting.GRAY))
-                                .append(TextUtil.currency(CurrencyUtil.format(newSenderBalance)))
-                        );
+                // Notify sender
+                sender.sendSystemMessage(
+                    TextUtil.success("You paid " + targetName + " (offline) ")
+                        .append(TextUtil.currency(CurrencyUtil.format(amount)))
+                        .append(TextUtil.plain(". "))
+                        .append(TextUtil.styled("New balance: ", net.minecraft.ChatFormatting.GRAY))
+                        .append(TextUtil.currency(CurrencyUtil.format(newSenderBalance)))
+                );
 
-                        // Queue notification for offline player
-                        transactionLog.queueNotification(receiverUuid,
-                            "You received " + CurrencyUtil.format(amount) + " from " +
-                                sender.getName().getString() + " while you were offline.",
-                            sender.getServer());
+                // Queue notification for offline player
+                transactionLog.queueNotification(receiverUuid,
+                    "You received " + CurrencyUtil.format(amount) + " from " +
+                        sender.getName().getString() + " while you were offline.",
+                    server);
 
-                        // Log transactions
-                        transactionLog.log(TransactionLog.Type.PAY_SEND,
-                            sender.getUUID(), sender.getName().getString(),
-                            receiverUuid, targetName,
-                            amount, null, 0,
-                            "Paid " + targetName + " (offline)");
+                // Log transactions
+                transactionLog.log(TransactionLog.Type.PAY_SEND,
+                    sender.getUUID(), sender.getName().getString(),
+                    receiverUuid, targetName,
+                    amount, null, 0,
+                    "Paid " + targetName + " (offline)");
 
-                        transactionLog.log(TransactionLog.Type.PAY_RECEIVE,
-                            receiverUuid, targetName,
-                            sender.getUUID(), sender.getName().getString(),
-                            amount, null, 0,
-                            "Received from " + sender.getName().getString() + " (offline)");
-                    });
-                });
+                transactionLog.log(TransactionLog.Type.PAY_RECEIVE,
+                    receiverUuid, targetName,
+                    sender.getUUID(), sender.getName().getString(),
+                    amount, null, 0,
+                    "Received from " + sender.getName().getString() + " (offline)");
             });
         });
     }
