@@ -1,5 +1,7 @@
 package com.solidus.commands;
 
+import com.solidus.api.PermissionChecker;
+import com.solidus.api.SolidusPermissions;
 import com.solidus.shop.ShopManager;
 import com.solidus.util.CurrencyUtil;
 import com.solidus.util.TextUtil;
@@ -24,7 +26,9 @@ import java.util.Map;
  *   /shop              - Opens the full shop GUI
  *   /shop search <query> - Search shop items by name
  *
- * Permission: Available to all players
+ * Permissions:
+ *   solidus.command.shop        - Open shop GUI (default: all players)
+ *   solidus.command.shop.search - Search shop items (default: all players)
  *
  * The search sub-command provides a text-based item lookup when the player
  * knows the item name but doesn't want to browse through multiple pages.
@@ -34,6 +38,7 @@ public class ShopCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, ShopManager shopManager) {
         dispatcher.register(Commands.literal("shop")
+            .requires(PermissionChecker.require(SolidusPermissions.SHOP, 0))
             .executes(context -> {
                 ServerPlayer player = context.getSource().getPlayerOrException();
                 shopManager.openShop(player);
@@ -41,6 +46,7 @@ public class ShopCommand {
             })
             // /shop search <query> - Search items by name
             .then(Commands.literal("search")
+                .requires(PermissionChecker.require(SolidusPermissions.SHOP_SEARCH, 0))
                 .then(Commands.argument("query", StringArgumentType.greedyString())
                     .suggests((context, builder) -> {
                         // Suggest material names from the shop

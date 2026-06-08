@@ -1,6 +1,7 @@
 package com.solidus;
 
 import com.solidus.api.SolidusAPI;
+import com.solidus.api.PermissionConfig;
 import com.solidus.commands.BalanceCommand;
 import com.solidus.commands.BaltopCommand;
 import com.solidus.commands.PayCommand;
@@ -57,6 +58,11 @@ public class SolidusMod implements DedicatedServerModInitializer {
     @Override
     public void onInitializeServer() {
         LOGGER.info("Solidus Economy & Commerce Engine is initializing...");
+
+        // Initialize permission system (must be before command registration)
+        PermissionConfig.initialize(
+            net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir()
+        );
 
         // Initialize core subsystems in dependency order
         rateLimiter = new RateLimiter();

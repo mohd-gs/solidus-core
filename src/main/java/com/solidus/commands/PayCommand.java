@@ -1,6 +1,8 @@
 package com.solidus.commands;
 
 import com.solidus.SolidusMod;
+import com.solidus.api.PermissionChecker;
+import com.solidus.api.SolidusPermissions;
 import com.solidus.economy.BalanceManager;
 import com.solidus.economy.EconomyEngine;
 import com.solidus.economy.SQLiteStorage;
@@ -26,7 +28,9 @@ import java.util.UUID;
  *   /pay <player> <amount>       - Pay an online player
  *   /pay offline <name> <amount> - Pay an offline player by name
  *
- * Permission: Available to all players
+ * Permissions:
+ *   solidus.command.pay         - Pay online players (default: all players)
+ *   solidus.command.pay.offline - Pay offline players (default: all players)
  *
  * Anti-Exploit Protections:
  * - Negative amount rejection (prevents reverse-transfer exploitation)
@@ -50,6 +54,7 @@ public class PayCommand {
         BalanceManager balanceManager = economyEngine.getBalanceManager();
 
         dispatcher.register(Commands.literal("pay")
+            .requires(PermissionChecker.require(SolidusPermissions.PAY, 0))
             // /pay <online_player> <amount> - Pay an online player
             .then(Commands.argument("player", EntityArgument.player())
                 .then(Commands.argument("amount", DoubleArgumentType.doubleArg(CurrencyUtil.MIN_TRANSACTION))
@@ -64,6 +69,7 @@ public class PayCommand {
             )
             // /pay offline <name> <amount> - Pay an offline player by name
             .then(Commands.literal("offline")
+                .requires(PermissionChecker.require(SolidusPermissions.PAY_OFFLINE, 0))
                 .then(Commands.argument("name", StringArgumentType.word())
                     .suggests((context, builder) -> {
                         // Suggest known player names from the database cache

@@ -1,5 +1,7 @@
 package com.solidus.commands;
 
+import com.solidus.api.PermissionChecker;
+import com.solidus.api.SolidusPermissions;
 import com.solidus.sell.SellGUI;
 import com.solidus.sell.SellScreenHandler;
 import com.solidus.shop.ShopManager;
@@ -32,7 +34,7 @@ import java.util.Map;
  *   /sell all          - Sells all sellable items in the player's inventory
  *   /sell all <item>   - Sells all of a specific item (e.g., /sell all ender_pearl)
  *
- * Permission: Available to all players
+ * Permission: solidus.command.sell (default: all players)
  *
  * Shulker Box Support:
  * All sell commands also process items inside shulker boxes in the player's
@@ -48,6 +50,7 @@ public class SellCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, ShopManager shopManager) {
         dispatcher.register(Commands.literal("sell")
+            .requires(PermissionChecker.require(SolidusPermissions.SELL, 0))
             // /sell gui - Open the sell GUI
             .then(Commands.literal("gui")
                 .executes(context -> {

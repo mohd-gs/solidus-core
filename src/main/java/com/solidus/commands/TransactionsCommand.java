@@ -1,5 +1,7 @@
 package com.solidus.commands;
 
+import com.solidus.api.PermissionChecker;
+import com.solidus.api.SolidusPermissions;
 import com.solidus.economy.EconomyEngine;
 import com.solidus.economy.TransactionLog;
 import com.solidus.util.CurrencyUtil;
@@ -18,7 +20,7 @@ import java.util.List;
  * /transactions command - View recent financial transaction history.
  *
  * Usage: /transactions [page]
- * Permission: Available to all players
+ * Permission: solidus.command.transactions (default: all players)
  *
  * Displays the last 10 transactions for the player, showing type,
  * amount, counterpart, item details, and timestamp.
@@ -30,6 +32,7 @@ public class TransactionsCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, EconomyEngine economyEngine) {
         dispatcher.register(Commands.literal("transactions")
+            .requires(PermissionChecker.require(SolidusPermissions.TRANSACTIONS, 0))
             .executes(context -> {
                 ServerPlayer player = context.getSource().getPlayerOrException();
                 executeTransactions(player, economyEngine, 1);

@@ -1,5 +1,7 @@
 package com.solidus.commands;
 
+import com.solidus.api.PermissionChecker;
+import com.solidus.api.SolidusPermissions;
 import com.solidus.economy.BalanceManager;
 import com.solidus.economy.SQLiteStorage;
 import com.solidus.util.TextUtil;
@@ -18,7 +20,7 @@ import java.util.List;
  * /baltop command - Server leaderboard displaying the wealthiest players.
  *
  * Usage: /baltop
- * Permission: Available to all players
+ * Permission: solidus.command.baltop (default: all players)
  *
  * Displays the top 10 players by balance in a formatted list.
  * All text uses Component.literal().withStyle() - NO legacy formatting codes.
@@ -29,6 +31,7 @@ public class BaltopCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, BalanceManager balanceManager) {
         dispatcher.register(Commands.literal("baltop")
+            .requires(PermissionChecker.require(SolidusPermissions.BALTOP, 0))
             .executes(context -> {
                 ServerPlayer player = context.getSource().getPlayerOrException();
                 executeBaltop(player, balanceManager);
