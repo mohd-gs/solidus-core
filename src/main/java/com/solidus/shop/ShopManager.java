@@ -425,9 +425,18 @@ public class ShopManager {
         return TextUtil.getMaterialName(stack);
     }
 
+    /**
+     * Checks if the player has enough of a specific item in their main inventory.
+     * Armor slots (36-39) are excluded to prevent accidental armor sales.
+     * Offhand (slot 40) is excluded from shop sells for safety — players
+     * can use /sell commands if they want to sell offhand items.
+     */
     private boolean hasItemInInventory(ServerPlayer player, String material, int quantity) {
         int count = 0;
-        for (net.minecraft.world.item.ItemStack stack : player.getInventory().getItems()) {
+        // getContainerSize() = 41 (36 main + 4 armor + 1 offhand)
+        // Only count items in main inventory (slots 0-35)
+        for (int i = 0; i < 36; i++) {
+            net.minecraft.world.item.ItemStack stack = player.getInventory().getItem(i);
             if (!stack.isEmpty() && getMaterialName(stack).equalsIgnoreCase(material)) {
                 count += stack.getCount();
             }
@@ -435,9 +444,16 @@ public class ShopManager {
         return count >= quantity;
     }
 
+    /**
+     * Removes items from the player's main inventory only.
+     * Armor slots (36-39) and offhand (40) are protected — this prevents
+     * players from accidentally selling equipped armor via the shop GUI.
+     * The same safety pattern is used in SellCommand.java.
+     */
     private void removeItemFromInventory(ServerPlayer player, String material, int quantity) {
         int remaining = quantity;
-        for (int i = 0; i < player.getInventory().getContainerSize() && remaining > 0; i++) {
+        // Only remove from main inventory (slots 0-35), skip armor and offhand
+        for (int i = 0; i < 36 && remaining > 0; i++) {
             net.minecraft.world.item.ItemStack stack = player.getInventory().getItem(i);
             if (!stack.isEmpty() && getMaterialName(stack).equalsIgnoreCase(material)) {
                 int toRemove = Math.min(stack.getCount(), remaining);

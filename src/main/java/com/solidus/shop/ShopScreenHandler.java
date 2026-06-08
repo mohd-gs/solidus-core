@@ -120,10 +120,11 @@ public class ShopScreenHandler extends AbstractContainerMenu {
     @Override
     // TODO: 26.1.x - ClickType → ContainerInput; button param may be removed (absorbed into ContainerInput)
     public void clicked(int slotIndex, int button, net.minecraft.world.inventory.ContainerInput containerInput, Player player) {
-        // Allow normal interaction with the player's own inventory area
-        // Slot indices >= 54 are in the player's inventory (added after the 54 container slots)
+        // Player inventory clicks (slot >= 54) — return without action.
+        // Note: Vanilla processing is already cancelled by the ServerPlayerEntityMixin,
+        // so player inventory interaction is blocked while the shop GUI is open.
+        // This is intentional for security — prevents item manipulation exploits.
         if (slotIndex < 0 || slotIndex >= 54) {
-            // Pass through to vanilla handling for player inventory clicks
             return;
         }
 
@@ -166,8 +167,9 @@ public class ShopScreenHandler extends AbstractContainerMenu {
             }
             shopManager.processSell(player, material, totalInInventory);
         } else if (isShiftClick) {
-            // Shift+Left-Click: Buy a stack (64)
-            shopManager.processBuy(player, material, 64);
+            // Shift+Left-Click: Buy a stack (use item's actual max stack size)
+            int maxStack = getMaxStackSize(material);
+            shopManager.processBuy(player, material, maxStack);
         } else if (isRightClick) {
             // Right-Click: Sell 1
             shopManager.processSell(player, material, 1);
@@ -221,12 +223,33 @@ public class ShopScreenHandler extends AbstractContainerMenu {
     }
 
     /**
-     * Counts the total number of a specific material in the player's inventory.
+     * Gets the actual max stack size for a material.
+     * Not all items stack to 64 (e.g., ender pearls = 16, snowballs = 16).
+     * Falls back to 64 if the item can't be resolved.
+     */
+    private int getMaxStackSize(String material) {
+        try {
+            net.minecraft.world.item.Item item = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .get(new net.minecraft.resources.ResourceLocation(material.toLowerCase()));
+            if (item != null) {
+                return item.getDefaultMaxStackSize();
+            }
+        } catch (Exception e) {
+            // Fall through to default
+        }
+        return 64;
+    }
+
+    /**
+     * Counts the total number of a specific material in the player's main inventory.
      * Used by Shift+Right-Click to sell all of a given item.
+     * Armor slots (36-39) and offhand (40) are excluded to prevent accidental sales.
      */
     private int countItemInInventory(ServerPlayer player, String material) {
         int count = 0;
-        for (ItemStack stack : player.getInventory().getItems()) {
+        // Only count items in main inventory (slots 0-35), skip armor and offhand
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
             if (!stack.isEmpty() && TextUtil.getMaterialName(stack).equalsIgnoreCase(material)) {
                 count += stack.getCount();
             }

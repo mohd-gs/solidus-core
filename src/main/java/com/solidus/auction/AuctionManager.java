@@ -274,9 +274,20 @@ public class AuctionManager {
                                     // CRITICAL: Listing save failed after fee deduction — attempt refund
                                     SolidusMod.LOGGER.error("CRITICAL: Auction listing save failed for {}! Refunding fee.",
                                         player.getName().getString());
-                                    player.sendSystemMessage(TextUtil.error(
-                                        "Failed to list item. Listing fee refunded."));
-                                    balanceManager.addBalance(player, listingFee);
+                                    balanceManager.addBalance(player, listingFee).thenAccept(refundBalance -> {
+                                        player.getServer().execute(() -> {
+                                            if (refundBalance < 0) {
+                                                SolidusMod.LOGGER.error(
+                                                    "CATASTROPHIC: Listing fee refund also failed for {}! Amount: {}",
+                                                    player.getName().getString(), listingFee);
+                                                player.sendSystemMessage(TextUtil.error(
+                                                    "Critical error: listing fee refund failed. Please contact an admin."));
+                                            } else {
+                                                player.sendSystemMessage(TextUtil.error(
+                                                    "Failed to list item. Listing fee has been refunded."));
+                                            }
+                                        });
+                                    });
                                 }
                             } finally {
                                 pendingListings.remove(playerId);
@@ -404,10 +415,21 @@ public class AuctionManager {
                                         SolidusMod.LOGGER.error(
                                             "CRITICAL: Failed to pay auction seller {} for listing {}. Rolling back buyer.",
                                             entry.sellerName(), entry.listingId());
-                                        balanceManager.addBalance(buyer, entry.price());
                                         markAsUnsold(entry.listingId());
-                                        buyer.sendSystemMessage(TextUtil.error(
-                                            "Transaction failed — seller could not be paid. Your money has been refunded."));
+                                        balanceManager.addBalance(buyer, entry.price()).thenAccept(refundBalance -> {
+                                            buyer.getServer().execute(() -> {
+                                                if (refundBalance < 0) {
+                                                    SolidusMod.LOGGER.error(
+                                                        "CATASTROPHIC: Buyer refund also failed after seller payment failure! Buyer: {}, Amount: {}",
+                                                        buyer.getName().getString(), entry.price());
+                                                    buyer.sendSystemMessage(TextUtil.error(
+                                                        "Critical error: refund failed. Please contact an admin immediately."));
+                                                } else {
+                                                    buyer.sendSystemMessage(TextUtil.error(
+                                                        "Transaction failed — seller could not be paid. Your money has been refunded."));
+                                                }
+                                            });
+                                        });
                                         return;
                                     }
 
@@ -699,8 +721,8 @@ public class AuctionManager {
         } catch (Exception e) {
             SolidusMod.LOGGER.warn("Item NBT serialization failed, using material fallback: {}", e.getMessage());
         }
-        // Fallback to simple material name serialization
-        return stack.getItem().toString().toUpperCase();
+        // Fallback to simple material name serialization using registry path
+        return TextUtil.getMaterialName(stack);
     }
 
     private ItemStack deserializeItemStack(String itemNbt, String materialName, int quantity) {

@@ -110,11 +110,13 @@ public class TransactionsCommand {
             case AUCTION_EXPIRED -> "EXPIRE";
             case PAY_SEND -> "PAY-";
             case PAY_RECEIVE -> "PAY+";
+            case DEATH_PENALTY -> "DEATH-";
+            case DEATH_REWARD -> "DEATH+";
         };
 
         ChatFormatting typeColor = switch (entry.type()) {
-            case SHOP_BUY, PAY_SEND, AUCTION_LIST -> ChatFormatting.RED;
-            case SHOP_SELL, PAY_RECEIVE, AUCTION_SOLD -> ChatFormatting.GREEN;
+            case SHOP_BUY, PAY_SEND, AUCTION_LIST, DEATH_PENALTY -> ChatFormatting.RED;
+            case SHOP_SELL, PAY_RECEIVE, AUCTION_SOLD, DEATH_REWARD -> ChatFormatting.GREEN;
             case AUCTION_BOUGHT -> ChatFormatting.AQUA;
             case AUCTION_EXPIRED -> ChatFormatting.YELLOW;
         };

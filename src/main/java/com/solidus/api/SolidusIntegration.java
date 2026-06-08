@@ -144,10 +144,39 @@ public final class SolidusIntegration {
 
                                     // Log the transactions via reflection
                                     logDeathTransaction(api, victim, killer, penalty, penaltyPercent);
+                                } else {
+                                    // CRITICAL: Killer addBalance failed after victim was deducted!
+                                    // Refund the victim to prevent money destruction
+                                    try {
+                                        java.lang.reflect.Method refundAdd = apiClass.getMethod(
+                                            "addBalance",
+                                            net.minecraft.server.level.ServerPlayer.class, double.class);
+                                        refundAdd.invoke(api, victim, penalty);
+                                        victim.getServer().execute(() ->
+                                            victim.sendSystemMessage(
+                                                net.minecraft.network.chat.Component.literal(
+                                                    "[Solidus] Death penalty transfer failed. Your balance has been restored.")
+                                                .withStyle(net.minecraft.ChatFormatting.YELLOW)));
+                                    } catch (Exception refundEx) {
+                                        // CATASTROPHIC: Both add to killer AND refund to victim failed
+                                        victim.getServer().execute(() ->
+                                            victim.sendSystemMessage(
+                                                net.minecraft.network.chat.Component.literal(
+                                                    "[Solidus] CRITICAL: Death penalty failed and refund also failed. Contact admin!")
+                                                .withStyle(net.minecraft.ChatFormatting.RED)));
+                                    }
                                 }
                             });
                         } catch (Exception e) {
-                            // Add to killer failed — non-critical, balance was already deducted
+                            // Add to killer failed — refund the victim to prevent money destruction
+                            try {
+                                java.lang.reflect.Method refundAdd = apiClass.getMethod(
+                                    "addBalance",
+                                    net.minecraft.server.level.ServerPlayer.class, double.class);
+                                refundAdd.invoke(api, victim, penalty);
+                            } catch (Exception refundEx) {
+                                // Refund also failed — logged but can't do anything more
+                            }
                         }
                     });
                 } catch (Exception e) {

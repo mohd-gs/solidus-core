@@ -97,9 +97,12 @@ public class AuctionScreenHandler extends AbstractContainerMenu {
     @Override
     // TODO: 26.1.x - ClickType → ContainerInput; button param may be removed (absorbed into ContainerInput)
     public void clicked(int slotIndex, int button, net.minecraft.world.inventory.ContainerInput containerInput, Player player) {
-        // Allow normal interaction with the player's own inventory area
+        // Player inventory clicks (slot >= 54) — return without action.
+        // Note: Vanilla processing is already cancelled by the ServerPlayerEntityMixin,
+        // so player inventory interaction is blocked while the auction GUI is open.
+        // This is intentional for security — prevents item manipulation exploits.
         if (slotIndex < 0 || slotIndex >= 54) {
-            return; // Player inventory clicks - let vanilla handle
+            return;
         }
 
         GuiSlot guiSlot = slotMap.get(slotIndex);
