@@ -3,6 +3,8 @@ package com.solidus.economy;
 import com.solidus.SolidusMod;
 import com.solidus.util.ConfigManager;
 
+import net.fabricmc.loader.api.FabricLoader;
+
 /**
  * Economy Engine - Central coordinator for the Solidus economy system.
  *
@@ -33,9 +35,13 @@ public class EconomyEngine {
     public void initialize() {
         SolidusMod.LOGGER.info("Initializing Solidus Economy Engine...");
 
-        // Initialize config directory from the server's run directory root
-        // This creates: <server-root>/config/solidus/
-        ConfigManager.initialize(java.nio.file.Path.of("."));
+        // Initialize config directory using FabricLoader's API
+        // This is the reliable way to get the config directory in a Fabric mod,
+        // instead of using Path.of(".") which depends on the CWD (current working directory)
+        // and could resolve to the wrong path if the server is launched from a different directory.
+        // FabricLoader.getInstance().getConfigDir() always returns the correct path
+        // regardless of where the JVM was started from.
+        ConfigManager.initialize(FabricLoader.getInstance().getConfigDir().getParent());
 
         // Initialize SQLite storage
         String dbPath = ConfigManager.getConfigDir().toAbsolutePath().toString();

@@ -218,8 +218,10 @@ public class AuctionManager {
         BalanceManager balanceManager = economyEngine.getBalanceManager();
 
         // Capture item details NOW (before any async hops) to prevent
-        // the player swapping items in their hand during the async chain
-        String materialName = heldItem.getItem().toString().toUpperCase();
+        // the player swapping items in their hand during the async chain.
+        // Use registry path name for reliable material matching — getItem().toString()
+        // is unreliable (may include namespace prefixes or vary by mapping).
+        String materialName = TextUtil.getMaterialName(heldItem);
         int quantity = heldItem.getCount();
         String itemNbt = serializeItemStack(heldItem);
         int selectedSlot = player.getInventory().getSelectedSlot();
@@ -392,56 +394,66 @@ public class AuctionManager {
                             return;
                         }
 
-                        // Pay the seller
+                        // Pay the seller FIRST — if this fails, we must rollback the buyer
                         balanceManager.addBalance(entry.sellerUuid(), entry.sellerName(), entry.price())
                             .thenAccept(newSellerBalance -> {
-                                if (newSellerBalance < 0) {
-                                    SolidusMod.LOGGER.error("CRITICAL: Failed to pay auction seller {} for listing {}",
-                                        entry.sellerName(), entry.listingId());
-                                }
+                                buyer.getServer().execute(() -> {
+                                    if (newSellerBalance < 0) {
+                                        // CRITICAL: Seller payment failed after buyer was charged!
+                                        // Rollback: refund the buyer and mark listing as unsold
+                                        SolidusMod.LOGGER.error(
+                                            "CRITICAL: Failed to pay auction seller {} for listing {}. Rolling back buyer.",
+                                            entry.sellerName(), entry.listingId());
+                                        balanceManager.addBalance(buyer, entry.price());
+                                        markAsUnsold(entry.listingId());
+                                        buyer.sendSystemMessage(TextUtil.error(
+                                            "Transaction failed — seller could not be paid. Your money has been refunded."));
+                                        return;
+                                    }
+
+                                    // Seller paid successfully — give item to buyer
+                                    ItemStack purchasedItem = deserializeItemStack(entry.itemNbt(), entry.materialName(), entry.quantity());
+                                    if (!buyer.getInventory().add(purchasedItem)) {
+                                        buyer.drop(purchasedItem, false);
+                                        buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
+                                    }
+
+                                    // Log transaction for buyer
+                                    economyEngine.getTransactionLog().log(
+                                        TransactionLog.Type.AUCTION_BOUGHT,
+                                        buyer.getUUID(), buyer.getName().getString(),
+                                        entry.sellerUuid(), entry.sellerName(),
+                                        entry.price(), entry.materialName(), entry.quantity(),
+                                        "Bought " + entry.quantity() + "x " + entry.materialName() + " from " + entry.sellerName()
+                                    );
+
+                                    // Log transaction for seller (may be offline)
+                                    economyEngine.getTransactionLog().log(
+                                        TransactionLog.Type.AUCTION_SOLD,
+                                        entry.sellerUuid(), entry.sellerName(),
+                                        buyer.getUUID(), buyer.getName().getString(),
+                                        entry.price(), entry.materialName(), entry.quantity(),
+                                        "Sold " + entry.quantity() + "x " + entry.materialName() + " to " + buyer.getName().getString()
+                                    );
+
+                                    // Queue notification for seller (delivers immediately if online)
+                                    economyEngine.getTransactionLog().queueNotification(
+                                        entry.sellerUuid(),
+                                        "Your auction item " + entry.quantity() + "x " + entry.materialName() +
+                                            " was purchased by " + buyer.getName().getString() + " for " +
+                                            CurrencyUtil.format(entry.price()),
+                                        buyer.getServer()
+                                    );
+
+                                    // Success notification
+                                    buyer.sendSystemMessage(
+                                        TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
+                                            .append(TextUtil.currency(CurrencyUtil.format(entry.price())))
+                                            .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
+                                            .append(TextUtil.currency(CurrencyUtil.format(newBuyerBalance)))
+                                    );
+                                });
                             });
-
-                        // Give item to buyer
-                        ItemStack purchasedItem = deserializeItemStack(entry.itemNbt(), entry.materialName(), entry.quantity());
-                        if (!buyer.getInventory().add(purchasedItem)) {
-                            buyer.drop(purchasedItem, false);
-                            buyer.sendSystemMessage(TextUtil.warning("Inventory full! Item dropped at your feet."));
-                        }
-
-                        // Log transaction for buyer
-                        economyEngine.getTransactionLog().log(
-                            TransactionLog.Type.AUCTION_BOUGHT,
-                            buyer.getUUID(), buyer.getName().getString(),
-                            entry.sellerUuid(), entry.sellerName(),
-                            entry.price(), entry.materialName(), entry.quantity(),
-                            "Bought " + entry.quantity() + "x " + entry.materialName() + " from " + entry.sellerName()
-                        );
-
-                        // Log transaction for seller (may be offline)
-                        economyEngine.getTransactionLog().log(
-                            TransactionLog.Type.AUCTION_SOLD,
-                            entry.sellerUuid(), entry.sellerName(),
-                            buyer.getUUID(), buyer.getName().getString(),
-                            entry.price(), entry.materialName(), entry.quantity(),
-                            "Sold " + entry.quantity() + "x " + entry.materialName() + " to " + buyer.getName().getString()
-                        );
-
-                        // Queue notification for seller (delivers immediately if online)
-                        economyEngine.getTransactionLog().queueNotification(
-                            entry.sellerUuid(),
-                            "Your auction item " + entry.quantity() + "x " + entry.materialName() +
-                                " was purchased by " + buyer.getName().getString() + " for " +
-                                CurrencyUtil.format(entry.price()),
-                            buyer.getServer()
-                        );
-
-                        // Success notification
-                        buyer.sendSystemMessage(
-                            TextUtil.success("Purchased " + entry.quantity() + "x " + entry.materialName() + " for ")
-                                .append(TextUtil.currency(CurrencyUtil.format(entry.price())))
-                                .append(TextUtil.styled(" | New balance: ", ChatFormatting.GRAY))
-                                .append(TextUtil.currency(CurrencyUtil.format(newBuyerBalance)))
-                        );
                     });
                 });
             });

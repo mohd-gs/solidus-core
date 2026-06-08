@@ -2,6 +2,7 @@ package com.solidus.shop;
 
 import com.solidus.SolidusMod;
 import com.solidus.shop.ShopGUI.GuiSlot;
+import com.solidus.util.TextUtil;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -157,7 +158,13 @@ public class ShopScreenHandler extends AbstractContainerMenu {
 
         if (isShiftClick && isRightClick) {
             // Shift+Right-Click: Sell all of this item
-            shopManager.processSell(player, material, 64); // Will sell up to available amount
+            // Count the actual number of this item in the player's inventory
+            int totalInInventory = countItemInInventory(player, material);
+            if (totalInInventory <= 0) {
+                player.sendSystemMessage(TextUtil.error("You don't have any " + material + " to sell!"));
+                return;
+            }
+            shopManager.processSell(player, material, totalInInventory);
         } else if (isShiftClick) {
             // Shift+Left-Click: Buy a stack (64)
             shopManager.processBuy(player, material, 64);
@@ -211,6 +218,20 @@ public class ShopScreenHandler extends AbstractContainerMenu {
                 player.closeContainer();
             }
         }
+    }
+
+    /**
+     * Counts the total number of a specific material in the player's inventory.
+     * Used by Shift+Right-Click to sell all of a given item.
+     */
+    private int countItemInInventory(ServerPlayer player, String material) {
+        int count = 0;
+        for (ItemStack stack : player.getInventory().getItems()) {
+            if (!stack.isEmpty() && TextUtil.getMaterialName(stack).equalsIgnoreCase(material)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
     }
 
     /**

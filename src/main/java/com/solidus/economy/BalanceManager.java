@@ -230,17 +230,25 @@ public class BalanceManager {
                 }
                 // Deduction succeeded, now add to receiver
                 return storage.addBalance(receiverUuid, receiverName, amount)
-                    .thenApply(newReceiverBalance -> {
+                    .thenCompose(newReceiverBalance -> {
                         if (newReceiverBalance < 0) {
-                            // CRITICAL: Addition failed after deduction - log error
-                            // Attempt to refund sender
+                            // CRITICAL: Addition failed after deduction — must verify refund succeeds
                             LOGGER.error(
                                 "CRITICAL: Transfer add failed after deduct! Refunding sender. Sender: {}, Receiver: {}, Amount: {}",
                                 senderName, receiverName, amount);
-                            storage.addBalance(senderUuid, senderName, amount);
-                            return new TransferResult(false, "Transfer failed. Please try again.", 0, 0);
+                            // Chain the refund and verify it succeeds — this is NOT fire-and-forget
+                            return storage.addBalance(senderUuid, senderName, amount)
+                                .thenApply(refundResult -> {
+                                    if (refundResult < 0) {
+                                        LOGGER.error(
+                                            "CATASTROPHIC: Refund also failed after transfer deduct! Sender: {}, Amount: {}. MANUAL INTERVENTION REQUIRED.",
+                                            senderName, amount);
+                                    }
+                                    return new TransferResult(false, "Transfer failed. Please try again.", 0, 0);
+                                });
                         }
-                        return new TransferResult(true, "Transfer successful.", newSenderBalance, newReceiverBalance);
+                        return CompletableFuture.completedFuture(
+                            new TransferResult(true, "Transfer successful.", newSenderBalance, newReceiverBalance));
                     });
             });
     }

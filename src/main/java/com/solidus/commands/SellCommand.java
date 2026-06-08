@@ -189,18 +189,25 @@ public class SellCommand {
             player.getInventory().setItem(i, ItemStack.EMPTY);
         }
 
-        // Also check offhand and armor slots for /sell all
-        if (targetMaterial == null) {
-            // Check offhand
+        // Also check offhand slot for /sell all and /sell all <item>
+        // Previously, offhand was only checked when selling ALL items (targetMaterial == null),
+        // meaning /sell all ender_pearl would miss ender pearls in the offhand slot.
+        {
             ItemStack offhand = player.getOffhandItem();
             if (!offhand.isEmpty() && !SellScreenHandler.isShulkerBox(offhand)) {
                 String material = getMaterialName(offhand);
-                ShopManager.ShopItem shopItem = shopManager.findItem(material);
-                if (shopItem != null && shopItem.sellPrice() > 0) {
-                    double value = CurrencyUtil.round(shopItem.sellPrice() * offhand.getCount());
-                    totalEarnings += value;
-                    totalItemsSold += offhand.getCount();
-                    player.getInventory().setItem(40, ItemStack.EMPTY);
+                boolean matchesTarget = targetMaterial == null || material.equalsIgnoreCase(targetMaterial);
+                if (matchesTarget) {
+                    ShopManager.ShopItem shopItem = shopManager.findItem(material);
+                    if (shopItem != null && shopItem.sellPrice() > 0) {
+                        double value = CurrencyUtil.round(shopItem.sellPrice() * offhand.getCount());
+                        totalEarnings += value;
+                        totalItemsSold += offhand.getCount();
+                        if (targetMaterial != null) {
+                            soldItems.add(offhand.getCount() + "x " + material + " (offhand)");
+                        }
+                        player.getInventory().setItem(40, ItemStack.EMPTY);
+                    }
                 }
             }
             // Note: We don't sell armor to prevent accidental sales
